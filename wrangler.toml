@@ -1,0 +1,18 @@
+# Cloudflare Pages configuration.
+#
+# This project deploys as pure static files (served from the repo root) plus the
+# Pages Functions in ./functions — there is no build step.
+#
+# The KV binding below is what functions/api/submit-score.js reads as
+# `env.chicken_wing_fun_leaderboard`.
+
+name = "chicken-wing-fun"
+pages_build_output_dir = "."
+compatibility_date = "2026-09-09"
+
+# Leaderboard store — every submitted round is written as its own KV record.
+[[kv_namespaces]]
+binding = "chicken_wing_fun_leaderboard"
+id = "838b7906967c44f29d7e84f4b874f6e7"
+# Optional: to keep local `wrangler pages dev` / preview deploys off the
+# production namespace, add:  preview_id = "<a-separate-namespace-id>"

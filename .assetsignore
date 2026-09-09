@@ -1,0 +1,20 @@
+# Paths NOT to serve as static assets on Cloudflare Pages.
+# (gitignore-style patterns, resolved from pages_build_output_dir = ".")
+#
+# What DOES get served: index.html, assets/, src/  — i.e. the game itself.
+# Pages Functions in functions/ are compiled, never served as files.
+
+# --- non-game project files ---
+README.md
+preview.html
+package.json
+package-lock.json
+raw-assets/
+
+# --- tooling / config (mostly auto-excluded already, listed for clarity) ---
+wrangler.toml
+.assetsignore
+.claude/
+node_modules/
+.git/
+.gitignore

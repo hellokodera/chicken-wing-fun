@@ -1,0 +1,15 @@
+{
+  "name": "chicken-wing-fun",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A browser game for kids: a penguin flings chicken wings into a moving bathtub. Phaser 3, no build step.",
+  "type": "module",
+  "scripts": {
+    "start": "http-server -c-1 -p 8080 .",
+    "dev": "http-server -c-1 -p 8080 -o .",
+    "serve:python": "python -m http.server 8080"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
