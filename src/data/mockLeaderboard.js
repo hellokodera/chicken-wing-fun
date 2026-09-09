@@ -1,7 +1,8 @@
-// Placeholder leaderboard data. Hardcoded fake name+score entries so the
-// end-of-round Leaderboard screen has something to render — real backend
-// integration replaces this later. Kept unsorted-agnostic: LeaderboardScene
-// merges the live player in and sorts, so order here doesn't matter.
+// ⚠️ UNUSED as of the real-backend wiring (2026-09-09). LeaderboardScene now
+// fetches GET /api/leaderboard and renders exactly what the API returns — no
+// mock, no fallback. This file is kept only so the data isn't lost; nothing
+// imports it. Do NOT re-import it as a fallback: an empty leaderboard must show
+// the "no scores yet" empty state, not placeholder names.
 export const MOCK_LEADERBOARD = [
   { name: 'Mia', score: 640 },
   { name: 'Leo', score: 585 },

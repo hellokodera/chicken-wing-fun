@@ -2,25 +2,22 @@ import { GAME } from '../config.js';
 import { addCover } from '../util/display.js';
 import { Sfx } from '../util/sfx.js';
 import { drawPill } from '../ui/widgets.js';
-import { MOCK_LEADERBOARD } from '../data/mockLeaderboard.js';
 
-// Screen 2 of the end-of-round flow. Merges the live player into the (mock)
-// standings, shows the top 10, and always shows the player's own row — in its
-// natural slot if it lands in the top 10, otherwise as a highlighted extra row
-// below the top 10. Every row has the same "badge  name  score" format and the
-// same solid border; the player's row is distinguished only by its highlight
-// fill — no YOU badge, no dashed outline. If they picked a preset message on
-// Screen 1 it shows compactly after the name. The panel height is derived from
-// the row count so every row fits with margin to spare.
-// "Play Again" is the real bathtub asset (play_again_tub.png).
+// Screen 2 of the end-of-round flow. Fetches the real top scores from
+// GET /api/leaderboard and renders them — "badge  name  score" per row, every
+// row the same solid-bordered style. There is NO mock data and no client-side
+// merging: the board shows exactly what the API returns. Empty API result ->
+// an explicit "no scores yet" message; a failed fetch -> a "couldn't load"
+// message. The player's own score is always shown separately in the "YOUR
+// SCORE" pill on the right. "Play Again" is the real bathtub asset.
 const INK = 0x26313a;
 const INK_CSS = '#26313a';
+const MUTED_CSS = '#8fa0ac';
 const FONT = '"Fredoka", "Baloo 2", sans-serif';
 
 const PINK = 0xf0a9c8;
 const ROW_LIGHT = 0xffffff;
 const ROW_CREAM = 0xf6efe1;
-const YOU_ROW = 0xffe7a6; // highlight fill for the player's own row
 const BADGE_BY_RANK = [0xffc93c, 0xbcd7ef, 0xff9f7a]; // 1st gold, 2nd blue, 3rd coral
 
 const PANEL_X = 56;
@@ -29,7 +26,9 @@ const HEAD_BAND = 66; // clear space under the overlapping "Top Scores" pill
 const ROW_PITCH = 46;
 const ROW_H = 40;
 const BOT_PAD = 34; // generous clear space below the last row
-const EXTRA_GAP = 16; // extra breathing room above the out-of-top-10 player row
+const MIN_BODY_ROWS = 3; // keep the panel from looking cramped on 0/1/2 results
+const BOARD_SIZE = 10; // how many ranked rows the board shows
+const API_TIMEOUT_MS = 8000;
 
 export default class LeaderboardScene extends Phaser.Scene {
   constructor() {
@@ -40,67 +39,69 @@ export default class LeaderboardScene extends Phaser.Scene {
     this.finalScore = (data && data.score) || 0;
     this.playerName = (data && data.name) || 'Player';
     this.playerMessage = (data && data.message) || null;
+    this.saveError = !!(data && data.saveError);
+    // the server's stored record for the round just submitted (or null). Used
+    // to show the player's own row immediately, before KV list() propagates.
+    this.justSubmitted = (data && data.justSubmitted) || null;
     this._leaving = false;
   }
 
-  create() {
+  async create() {
+    // guards a stale fetch from painting onto a later re-entry of this scene
+    const token = (this._createToken = Symbol('create'));
+
     addCover(this, 'bg');
 
-    const { rows, playerInTop10 } = this.buildStandings();
-    const extraRow = playerInTop10 ? 0 : 1;
+    const rx = 1016;
+    this.buildYourScorePill(rx);
+    this.buildPlayAgain(rx, 486);
+    this.buildShareButton(rx, 646);
 
-    // --- panel, sized to fit every row (incl. the 11th player row) ---
-    const panelH =
-      HEAD_BAND + rows.length * ROW_PITCH + extraRow * EXTRA_GAP + BOT_PAD;
-    const panelY = Math.max(16, Math.round((GAME.HEIGHT - panelH) / 2));
+    // --- leaderboard: load, then render (or empty / error state) ---
     const panelCX = PANEL_X + PANEL_W / 2;
-
-    drawPill(this, panelCX, panelY + panelH / 2, PANEL_W, panelH, {
-      radius: 34,
-      strokeWidth: 6,
-      depth: 5,
-    });
-
-    // "Top Scores" header pill, straddling the panel's top edge
-    drawPill(this, panelCX, panelY, 244, 62, { fill: PINK, radius: 31, depth: 8 });
-    this.add
-      .text(panelCX, panelY, 'Top Scores', {
+    const loading = this.add
+      .text(panelCX, GAME.HEIGHT / 2, 'Loading leaderboard…', {
         fontFamily: FONT,
-        fontSize: '30px',
+        fontSize: '22px',
         fontStyle: '700',
-        color: INK_CSS,
+        color: MUTED_CSS,
       })
       .setOrigin(0.5)
       .setDepth(9);
 
-    // --- rows ---
-    const contentTop = panelY + HEAD_BAND;
-    const rowW = PANEL_W - 40;
-    const rowX = PANEL_X + 20;
-    rows.forEach((entry, i) => {
-      const cy =
-        contentTop + i * ROW_PITCH + ROW_H / 2 + (entry.extra ? EXTRA_GAP : 0);
-      const rc = this.buildRow(rowX, cy, rowW, ROW_H, i, entry);
-      rc.setAlpha(0);
-      this.tweens.add({
-        targets: rc,
-        alpha: 1,
-        y: { from: 8, to: 0 },
-        duration: 220,
-        delay: 60 + i * 42,
-        ease: 'Sine.Out',
-      });
-    });
+    let entries = null; // null = load failed; [] = genuinely empty
+    try {
+      entries = await this.fetchLeaderboard(BOARD_SIZE);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[leaderboard] load failed:', (err && err.message) || err);
+      entries = null;
+    }
 
-    // --- "YOUR SCORE" pill on the right ---
-    const rx = 1016;
+    // bail if the scene was left (Play Again) or superseded during the fetch
+    if (token !== this._createToken || this._leaving || !this.scene.isActive()) return;
+
+    // Optimistic self-insert: only when we actually have a list (even an empty
+    // one) — on a hard load failure we keep the error state rather than showing
+    // a board that's just the player.
+    if (entries !== null && this.justSubmitted) {
+      entries = this.mergeOwnRow(entries, this.justSubmitted, BOARD_SIZE);
+    }
+
+    loading.destroy();
+    this.renderBoard(entries);
+  }
+
+  // "YOUR SCORE" pill on the right, with the count-up. Also shows a small
+  // "couldn't save" note if the POST on the previous screen failed.
+  buildYourScorePill(rx) {
     drawPill(this, rx, 150, 250, 150, { radius: 40, strokeWidth: 6, depth: 8 });
     this.add
       .text(rx, 150 - 40, 'YOUR SCORE', {
         fontFamily: FONT,
         fontSize: '20px',
         fontStyle: '700',
-        color: '#8fa0ac',
+        color: MUTED_CSS,
       })
       .setOrigin(0.5)
       .setDepth(9);
@@ -125,15 +126,122 @@ export default class LeaderboardScene extends Phaser.Scene {
       onComplete: () => yourScore.setText(String(this.finalScore)),
     });
 
-    // --- Play Again — the isolated bathtub asset, scaled down ---
-    this.buildPlayAgain(rx, 486);
+    if (this.saveError) {
+      this.add
+        .text(rx, 150 + 92, "(couldn't save your score)", {
+          fontFamily: FONT,
+          fontSize: '15px',
+          fontStyle: '600',
+          color: '#c0705f',
+        })
+        .setOrigin(0.5)
+        .setDepth(9);
+    }
+  }
 
-    // --- Share the fun! — small secondary pill in the floor tile below the
-    //     tub, centred on the tub's own axis (rx). Tub feet bottom ≈ y613;
-    //     the floor grout lines sit at y≈609 and y≈697, so this row is
-    //     609–697 and the pill sits near its top: centre y646 → visual top
-    //     ≈ y622, an ~9px gap under the feet.
-    this.buildShareButton(rx, 646);
+  // GET /api/leaderboard -> { entries: [{ name, score, ts }], total, truncated }.
+  // Returns the cleaned entries array. Throws on non-OK / network / timeout so
+  // create() can distinguish "failed" from "empty".
+  async fetchLeaderboard(limit) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    try {
+      const res = await fetch(`/api/leaderboard?limit=${limit}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const list = data && Array.isArray(data.entries) ? data.entries : [];
+      return list
+        .filter((e) => e && typeof e.name === 'string' && typeof e.score === 'number')
+        .slice(0, limit);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  // Splice the player's just-submitted (real, server-stored) row into the
+  // fetched list at its ranked position — unless KV's list() already returned
+  // it. Same sort as the API: score desc, then earliest ts. Re-sliced to limit.
+  mergeOwnRow(list, own, limit) {
+    const dupe = list.some(
+      (e) =>
+        e.name === own.name &&
+        e.score === own.score &&
+        Math.abs((e.ts || 0) - (own.ts || 0)) <= 4000
+    );
+    if (dupe) return list;
+    const merged = [...list, { name: own.name, score: own.score, ts: own.ts }];
+    merged.sort((a, b) => b.score - a.score || (a.ts || 0) - (b.ts || 0));
+    return merged.slice(0, limit);
+  }
+
+  // Builds the panel + rows from real data. `entries` is null on load failure,
+  // [] when the API genuinely has nothing yet.
+  renderBoard(entries) {
+    const panelCX = PANEL_X + PANEL_W / 2;
+    const failed = entries === null;
+    const list = failed ? [] : entries;
+
+    const bodyRows = Math.max(list.length, MIN_BODY_ROWS);
+    const panelH = HEAD_BAND + bodyRows * ROW_PITCH + BOT_PAD;
+    const panelY = Math.max(16, Math.round((GAME.HEIGHT - panelH) / 2));
+
+    drawPill(this, panelCX, panelY + panelH / 2, PANEL_W, panelH, {
+      radius: 34,
+      strokeWidth: 6,
+      depth: 5,
+    });
+    drawPill(this, panelCX, panelY, 244, 62, { fill: PINK, radius: 31, depth: 8 });
+    this.add
+      .text(panelCX, panelY, 'Top Scores', {
+        fontFamily: FONT,
+        fontSize: '30px',
+        fontStyle: '700',
+        color: INK_CSS,
+      })
+      .setOrigin(0.5)
+      .setDepth(9);
+
+    const contentTop = panelY + HEAD_BAND;
+
+    if (list.length === 0) {
+      const msg = failed
+        ? "Couldn't load the leaderboard.\nCheck your connection and try again."
+        : 'No scores yet — be the first!';
+      this.add
+        .text(panelCX, contentTop + (bodyRows * ROW_PITCH) / 2 - 4, msg, {
+          fontFamily: FONT,
+          fontSize: '20px',
+          fontStyle: '700',
+          color: MUTED_CSS,
+          align: 'center',
+          lineSpacing: 7,
+        })
+        .setOrigin(0.5)
+        .setDepth(9);
+      return;
+    }
+
+    const rowW = PANEL_W - 40;
+    const rowX = PANEL_X + 20;
+    list.forEach((entry, i) => {
+      const cy = contentTop + i * ROW_PITCH + ROW_H / 2;
+      const rc = this.buildRow(rowX, cy, rowW, ROW_H, i, {
+        name: entry.name,
+        score: entry.score,
+        rank: i + 1,
+      });
+      rc.setAlpha(0);
+      this.tweens.add({
+        targets: rc,
+        alpha: 1,
+        y: { from: 8, to: 0 },
+        duration: 220,
+        delay: 60 + i * 42,
+        ease: 'Sine.Out',
+      });
+    });
   }
 
   // A compact rounded pill (cream fill, ink outline) with a small share glyph
@@ -216,42 +324,13 @@ export default class LeaderboardScene extends Phaser.Scene {
     });
   }
 
-  // Merge the live player into the mock board, sort, and decide which rows to
-  // render. Ties keep the existing (mock) entries ahead of the player.
-  buildStandings() {
-    const player = {
-      name: this.playerName,
-      score: this.finalScore,
-      message: this.playerMessage,
-      isPlayer: true,
-      order: 999,
-    };
-    const combined = MOCK_LEADERBOARD.map((e, i) => ({ ...e, order: i }));
-    combined.push(player);
-    combined.sort((a, b) => b.score - a.score || a.order - b.order);
-
-    const playerRank = combined.findIndex((e) => e.isPlayer) + 1;
-    const playerInTop10 = playerRank <= 10;
-
-    const rows = combined.slice(0, 10).map((e, i) => ({ ...e, rank: i + 1 }));
-    if (!playerInTop10) {
-      rows.push({ ...player, rank: playerRank, extra: true });
-    }
-    return { rows, playerRank, playerInTop10 };
-  }
-
-  // Row format is identical for every row: a numbered circle badge, then name,
-  // then score right-aligned — "1  Mia  640". The player's row is set apart
-  // only by its highlight fill (and dashed outline when it sits outside the top
-  // 10); no YOU badge. If they left a preset message it shows compactly after
-  // the name ("Player — 'Best game ever!'").
+  // One leaderboard row: a numbered circle badge, the name, and the score
+  // right-aligned — "1  Mia  640". `entry` is { name, score, rank } straight
+  // from the API. Rows alternate white / cream; nothing is highlighted.
   buildRow(x, cy, w, h, i, entry) {
     const rc = this.add.container(0, 0).setDepth(6);
-    const isYou = entry.isPlayer;
-    const fill = isYou ? YOU_ROW : i % 2 ? ROW_CREAM : ROW_LIGHT;
+    const fill = i % 2 ? ROW_CREAM : ROW_LIGHT;
 
-    // Same solid border as every other row; the player's row is set apart by
-    // its highlight fill alone.
     const g = this.add.graphics();
     g.fillStyle(fill, 1);
     g.fillRoundedRect(x, cy - h / 2, w, h, 20);
@@ -259,7 +338,7 @@ export default class LeaderboardScene extends Phaser.Scene {
     g.strokeRoundedRect(x, cy - h / 2, w, h, 20);
     rc.add(g);
 
-    // numbered rank badge — every row
+    // rank badge
     const bx = x + 26;
     const badge = this.add.graphics();
     badge.fillStyle(BADGE_BY_RANK[entry.rank - 1] || 0xd6e4f0, 1);
@@ -278,52 +357,29 @@ export default class LeaderboardScene extends Phaser.Scene {
         .setOrigin(0.5)
     );
 
-    const nameX = x + 52;
-
     // score, right-aligned
-    const scoreText = this.add
-      .text(x + w - 24, cy + 0.5, String(entry.score), {
-        fontFamily: FONT,
-        fontSize: '21px',
-        fontStyle: '700',
-        color: INK_CSS,
-      })
-      .setOrigin(1, 0.5);
-    rc.add(scoreText);
+    rc.add(
+      this.add
+        .text(x + w - 24, cy + 0.5, String(entry.score), {
+          fontFamily: FONT,
+          fontSize: '21px',
+          fontStyle: '700',
+          color: INK_CSS,
+        })
+        .setOrigin(1, 0.5)
+    );
 
     // name
-    const nameText = this.add
-      .text(nameX, cy + 0.5, entry.name, {
-        fontFamily: FONT,
-        fontSize: '21px',
-        fontStyle: '700',
-        color: INK_CSS,
-      })
-      .setOrigin(0, 0.5);
-    rc.add(nameText);
-
-    // preset message (player only) — compact, muted, ellipsis if it would run
-    // into the score. Presets are short so this rarely truncates.
-    if (entry.message) {
-      const msgX = nameX + nameText.width + 10;
-      const avail = x + w - 24 - scoreText.width - 16 - msgX;
-      const msg = this.add
-        .text(msgX, cy + 0.5, `— '${entry.message}'`, {
+    rc.add(
+      this.add
+        .text(x + 52, cy + 0.5, String(entry.name), {
           fontFamily: FONT,
-          fontSize: '16px',
-          fontStyle: '600',
-          color: '#6a7580',
+          fontSize: '21px',
+          fontStyle: '700',
+          color: INK_CSS,
         })
-        .setOrigin(0, 0.5);
-      if (msg.width > avail) {
-        let s = entry.message;
-        while (s.length > 0 && msg.width > avail) {
-          s = s.slice(0, -1);
-          msg.setText(s ? `— '${s.replace(/\s+$/, '')}…'` : '—');
-        }
-      }
-      rc.add(msg);
-    }
+        .setOrigin(0, 0.5)
+    );
 
     return rc;
   }

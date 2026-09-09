@@ -399,15 +399,76 @@ export default class ScoreEntryScene extends Phaser.Scene {
     return el;
   }
 
-  submit(rawName) {
+  // POST the round to /api/submit-score, then go to the leaderboard. The write
+  // is confirmed on success; on any failure (bad response, network, timeout) we
+  // still continue to the leaderboard — play is never blocked — and pass a
+  // `saveError` flag so that screen can show a small "couldn't save" note.
+  // On success we also hand the leaderboard the server's stored record so it
+  // can show the player's row immediately, before KV's list() catches up.
+  async submit(rawName) {
     if (this._leaving) return;
     this._leaving = true;
     Sfx.play(this, 'button');
+
     const name = (String(rawName || '').trim() || 'Player').slice(0, 16);
+    const score = Math.max(0, Math.round(Number(this.finalScore) || 0));
+    const message = this.selectedMessage || null;
+
+    // brief inline note so a slow network isn't a silent freeze
+    const saving = this.add
+      .text(GAME.WIDTH / 2, GAME.HEIGHT - 34, 'Saving…', {
+        fontFamily: FONT,
+        fontSize: '18px',
+        fontStyle: '700',
+        color: MUTED,
+      })
+      .setOrigin(0.5)
+      .setDepth(50);
+
+    let saveError = false;
+    let justSubmitted = null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      // submit-score always stamps the time server-side, so no timestamp is sent.
+      const res = await fetch('/api/submit-score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, score }),
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const payload = await res.json().catch(() => null);
+        const rec = payload && payload.record;
+        justSubmitted =
+          rec && typeof rec.score === 'number' && typeof rec.name === 'string'
+            ? {
+                name: rec.name,
+                score: rec.score,
+                ts: typeof rec.ts === 'number' ? rec.ts : Date.now(),
+              }
+            : { name, score, ts: Date.now() };
+      } else {
+        saveError = true;
+        const detail = await res.text().catch(() => '');
+        // eslint-disable-next-line no-console
+        console.warn('[submit-score] HTTP', res.status, detail);
+      }
+    } catch (err) {
+      saveError = true;
+      // eslint-disable-next-line no-console
+      console.warn('[submit-score] request failed:', (err && err.message) || err);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (saving.scene) saving.destroy();
     this.scene.start('LeaderboardScene', {
-      score: this.finalScore,
+      score,
       name,
-      message: this.selectedMessage || null,
+      message,
+      saveError,
+      justSubmitted,
     });
   }
 

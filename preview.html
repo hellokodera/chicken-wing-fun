@@ -43,12 +43,22 @@
     const params = new URLSearchParams(location.search);
     const which = params.get('scene') || 'score';
     const target = which === 'board' ? 'LeaderboardScene' : 'ScoreEntryScene';
+    // ?js=Name:Score  -> synthesise a `justSubmitted` for the board (mimics a
+    // successful POST from ScoreEntryScene) to test the optimistic self-insert.
+    const jsRaw = params.get('js');
+    let justSubmitted = null;
+    if (jsRaw && jsRaw.includes(':')) {
+      const [n, s] = jsRaw.split(':');
+      justSubmitted = { name: n, score: Number(s), ts: Date.now() };
+    }
     const data =
       which === 'board'
         ? {
             score: Number(params.get('score') || 194),
             name: params.get('name') || 'EthanFan',
-            message: params.get('msg') || 'You made this so fun!',
+            message: params.get('msg') || null,
+            saveError: params.get('saveError') === '1',
+            justSubmitted,
           }
         : { score: Number(params.get('score') || 194) };
 

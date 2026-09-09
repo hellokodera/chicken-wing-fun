@@ -15,6 +15,7 @@ raw-assets/
 wrangler.toml
 .assetsignore
 .claude/
+.wrangler/
 node_modules/
 .git/
 .gitignore
