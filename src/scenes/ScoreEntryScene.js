@@ -21,6 +21,7 @@ const CORAL_HEX = 0xff6f59;
 const FONT = '"Fredoka", "Baloo 2", sans-serif';
 const PLACEHOLDER = 'Save your name to see the leaderboard';
 const MSG_PLACEHOLDER = 'Leave a message for Ethan';
+const MSG_MAX_LEN = 50; // keep in sync with submit-score.js (server is authoritative)
 const MESSAGES = [
   'You made this so fun!',
   'Best game ever!',
@@ -412,7 +413,11 @@ export default class ScoreEntryScene extends Phaser.Scene {
 
     const name = (String(rawName || '').trim() || 'Player').slice(0, 16);
     const score = Math.max(0, Math.round(Number(this.finalScore) || 0));
-    const message = this.selectedMessage || null;
+    // client-side clamp (the message dropdown only offers safe presets today,
+    // but never send an unbounded string); submit-score.js re-validates + sanitises.
+    const message = this.selectedMessage
+      ? String(this.selectedMessage).slice(0, MSG_MAX_LEN)
+      : null;
 
     // brief inline note so a slow network isn't a silent freeze
     const saving = this.add
@@ -434,7 +439,7 @@ export default class ScoreEntryScene extends Phaser.Scene {
       const res = await fetch('/api/submit-score', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, score }),
+        body: JSON.stringify({ name, score, message }),
         signal: controller.signal,
       });
       if (res.ok) {
@@ -446,8 +451,10 @@ export default class ScoreEntryScene extends Phaser.Scene {
                 name: rec.name,
                 score: rec.score,
                 ts: typeof rec.ts === 'number' ? rec.ts : Date.now(),
+                // prefer the server's sanitised message
+                message: typeof rec.message === 'string' ? rec.message : message,
               }
-            : { name, score, ts: Date.now() };
+            : { name, score, ts: Date.now(), message };
       } else {
         saveError = true;
         const detail = await res.text().catch(() => '');

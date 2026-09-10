@@ -17,6 +17,11 @@
  *     binding = "chicken_wing_fun_leaderboard"
  *     id      = "838b7906967c44f29d7e84f4b874f6e7"
  *
+ * Body: { name, score, message? }
+ *   - message is optional: a short note shown next to the name on the board.
+ *     It is sanitised (tags/control chars stripped, whitespace collapsed) and
+ *     truncated to MSG_MAX_LEN server-side — never trust the client for this.
+ *
  * Key format: `score:<ts16>:<uuid>`
  *   - ts16 : Date.now() in ms, zero-padded to 16 chars, so a plain string sort
  *            of the `score:` prefix is chronological (headroom past year 5000).
@@ -27,6 +32,7 @@
 const MAX_NAME_LEN = 20;
 const MIN_SCORE = 0;
 const MAX_SCORE = 5000; // sanity ceiling — well beyond a real 120-second round
+const MSG_MAX_LEN = 50; // keep in sync with ScoreEntryScene's client-side clamp
 
 // Same-origin on Pages doesn't strictly need CORS, but these keep local dev,
 // preview deploys and any future subdomain working. No credentials/cookies are
@@ -60,6 +66,18 @@ function stripControlChars(str) {
     if (code > 31 && code !== 127) out += ch;
   }
   return out;
+}
+
+// Basic hygiene for the free-form message before it's stored and later rendered
+// onto other players' screens. Not a profanity filter — just: no control chars,
+// no markup, no runaway length, no weird whitespace.
+function sanitizeMessage(str) {
+  return stripControlChars(str)
+    .replace(/<[^>]*>/g, '') // strip anything that looks like an HTML/XML tag
+    .replace(/[<>]/g, '') // and any leftover stray angle brackets
+    .replace(/\s+/g, ' ') // collapse runs of whitespace
+    .trim()
+    .slice(0, MSG_MAX_LEN);
 }
 
 /** CORS preflight. */
@@ -112,6 +130,16 @@ export async function onRequestPost({ request, env }) {
     return json({ error: `"score" is above the accepted maximum (${MAX_SCORE}).` }, 400);
   }
 
+  // 2c. message — optional. If present it must be a string; it's then sanitised
+  //     and truncated (never rejected for length). Empty after sanitising -> null.
+  let message = null;
+  if (body.message != null) {
+    if (typeof body.message !== 'string') {
+      return json({ error: '"message" must be a string.' }, 400);
+    }
+    message = sanitizeMessage(body.message) || null;
+  }
+
   // 3. timestamp — always server-authoritative. Any client-supplied `timestamp`
   //    in the body is deliberately ignored (not trusted).
   const ts = Date.now();
@@ -124,9 +152,10 @@ export async function onRequestPost({ request, env }) {
     id,
     name,
     score,
+    message,
     timestamp: isoTimestamp,
     ts,
-    schema: 1,
+    schema: 2, // 2 adds `message`
   };
 
   // 5. Write — one put per round, no read-modify-write, no cap.
@@ -136,8 +165,9 @@ export async function onRequestPost({ request, env }) {
   try {
     await env.chicken_wing_fun_leaderboard.put(key, JSON.stringify(record), {
       // small list()-visible summary so leaderboard reads later don't need a
-      // get() per key.
-      metadata: { name, score, ts },
+      // get() per key. (name<=20 + message<=50 + score + ts is well under KV's
+      // 1024-byte metadata limit.)
+      metadata: { name, score, ts, message },
     });
   } catch {
     return json({ error: 'Could not save the score. Please try again.' }, 500);

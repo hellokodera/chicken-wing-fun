@@ -43,13 +43,18 @@
     const params = new URLSearchParams(location.search);
     const which = params.get('scene') || 'score';
     const target = which === 'board' ? 'LeaderboardScene' : 'ScoreEntryScene';
-    // ?js=Name:Score  -> synthesise a `justSubmitted` for the board (mimics a
-    // successful POST from ScoreEntryScene) to test the optimistic self-insert.
+    // ?js=Name:Score[:Message]  -> synthesise a `justSubmitted` for the board
+    // (mimics a successful POST) to test the optimistic self-insert.
     const jsRaw = params.get('js');
     let justSubmitted = null;
     if (jsRaw && jsRaw.includes(':')) {
-      const [n, s] = jsRaw.split(':');
-      justSubmitted = { name: n, score: Number(s), ts: Date.now() };
+      const [n, s, ...rest] = jsRaw.split(':');
+      justSubmitted = {
+        name: n,
+        score: Number(s),
+        ts: Date.now(),
+        message: rest.length ? rest.join(':') : null,
+      };
     }
     const data =
       which === 'board'
@@ -97,11 +102,13 @@
       dom: { createContainer: true },
       scene: [Boot, Pre, ScoreEntryScene, LeaderboardScene],
     });
+    window.__game = game; // dev-harness hook for CDP screenshot scripts
 
     // For static screenshots: once the target scene is up, fast-forward every
     // tween (count-ups, row fade-ins) straight to the end so the capture shows
     // the settled layout rather than a random animation frame.
-    if (params.has('still') || true) {
+    // ?nosettle=1 disables this — needed to capture transient UI (e.g. toasts).
+    if (params.get('nosettle') !== '1') {
       const pick = params.get('pick'); // preset message text to pre-select on ScoreEntry
       const openDd = params.get('open') === '1'; // leave the message dropdown open
       const settle = () => {

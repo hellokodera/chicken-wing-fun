@@ -30,6 +30,10 @@ const MIN_BODY_ROWS = 3; // keep the panel from looking cramped on 0/1/2 results
 const BOARD_SIZE = 10; // how many ranked rows the board shows
 const API_TIMEOUT_MS = 8000;
 
+// "Share the fun!" — deliberately no score, no competitive framing.
+const SHARE_TEXT = 'This is such a fun game — come play with me!';
+const SHARE_URL = 'https://chicken-wing-fun-game.pages.dev';
+
 export default class LeaderboardScene extends Phaser.Scene {
   constructor() {
     super('LeaderboardScene');
@@ -38,10 +42,10 @@ export default class LeaderboardScene extends Phaser.Scene {
   init(data) {
     this.finalScore = (data && data.score) || 0;
     this.playerName = (data && data.name) || 'Player';
-    this.playerMessage = (data && data.message) || null;
     this.saveError = !!(data && data.saveError);
-    // the server's stored record for the round just submitted (or null). Used
-    // to show the player's own row immediately, before KV list() propagates.
+    // the server's stored record for the round just submitted (or null): { name,
+    // score, ts, message }. Used to show the player's own row immediately, with
+    // its message, before KV list() propagates.
     this.justSubmitted = (data && data.justSubmitted) || null;
     this._leaving = false;
   }
@@ -154,6 +158,12 @@ export default class LeaderboardScene extends Phaser.Scene {
       const list = data && Array.isArray(data.entries) ? data.entries : [];
       return list
         .filter((e) => e && typeof e.name === 'string' && typeof e.score === 'number')
+        .map((e) => ({
+          name: e.name,
+          score: e.score,
+          ts: typeof e.ts === 'number' ? e.ts : 0,
+          message: typeof e.message === 'string' && e.message ? e.message : null,
+        }))
         .slice(0, limit);
     } finally {
       clearTimeout(timeout);
@@ -171,7 +181,10 @@ export default class LeaderboardScene extends Phaser.Scene {
         Math.abs((e.ts || 0) - (own.ts || 0)) <= 4000
     );
     if (dupe) return list;
-    const merged = [...list, { name: own.name, score: own.score, ts: own.ts }];
+    const merged = [
+      ...list,
+      { name: own.name, score: own.score, ts: own.ts, message: own.message || null },
+    ];
     merged.sort((a, b) => b.score - a.score || (a.ts || 0) - (b.ts || 0));
     return merged.slice(0, limit);
   }
@@ -230,6 +243,7 @@ export default class LeaderboardScene extends Phaser.Scene {
       const rc = this.buildRow(rowX, cy, rowW, ROW_H, i, {
         name: entry.name,
         score: entry.score,
+        message: entry.message || null,
         rank: i + 1,
       });
       rc.setAlpha(0);
@@ -313,20 +327,74 @@ export default class LeaderboardScene extends Phaser.Scene {
     hit.on('pointerupoutside', () => view.setScale(1));
   }
 
-  // Placeholder — the native share sheet / copy-link fallback is wired later.
-  onShare() {
+  // Primary: the Web Share API (opens the OS share sheet on mobile / supported
+  // desktop). Fallback: copy the URL and flash a confirmation. Never a no-op.
+  async onShare() {
     Sfx.play(this, 'button');
-    // eslint-disable-next-line no-console
-    console.log('[Leaderboard] Share the fun! — stub', {
-      score: this.finalScore,
-      name: this.playerName,
-      message: this.playerMessage,
+
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      try {
+        await navigator.share({ text: SHARE_TEXT, url: SHARE_URL });
+        return; // shared, or the sheet handled it
+      } catch (err) {
+        // user dismissed the sheet -> leave it; any other error -> fall through
+        if (err && err.name === 'AbortError') return;
+      }
+    }
+
+    // Fallback: copy the link.
+    try {
+      await navigator.clipboard.writeText(SHARE_URL);
+      this.flashToast(1016, 694, 'Link copied!');
+    } catch (err) {
+      // clipboard blocked (old browser / insecure context / no permission) —
+      // at least surface the URL so it isn't a dead end.
+      this.flashToast(1016, 694, SHARE_URL.replace(/^https?:\/\//, ''));
+    }
+  }
+
+  // Small pill toast, centred on (cx, cy): fades in, holds ~1.5s, fades out.
+  flashToast(cx, cy, message) {
+    const txt = this.add
+      .text(cx, cy, message, {
+        fontFamily: FONT,
+        fontSize: '17px',
+        fontStyle: '700',
+        color: INK_CSS,
+      })
+      .setOrigin(0.5)
+      .setDepth(61);
+    const w = Math.ceil(txt.width) + 34;
+    const h = 34;
+    const bg = this.add.graphics().setDepth(60);
+    bg.fillStyle(0xf3f7f2, 1);
+    bg.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+    bg.lineStyle(3, INK, 1);
+    bg.strokeRoundedRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+
+    const parts = [bg, txt];
+    parts.forEach((o) => o.setAlpha(0));
+    this.tweens.add({
+      targets: parts,
+      alpha: 1,
+      duration: 140,
+      ease: 'Sine.Out',
+      onComplete: () => {
+        this.tweens.add({
+          targets: parts,
+          alpha: 0,
+          delay: 1500,
+          duration: 320,
+          ease: 'Sine.In',
+          onComplete: () => parts.forEach((o) => o.destroy()),
+        });
+      },
     });
   }
 
-  // One leaderboard row: a numbered circle badge, the name, and the score
-  // right-aligned — "1  Mia  640". `entry` is { name, score, rank } straight
-  // from the API. Rows alternate white / cream; nothing is highlighted.
+  // One leaderboard row: a numbered circle badge, the name, an optional message
+  // ("— 'Best game ever!'"), and the score right-aligned. `entry` is
+  // { name, score, message, rank }. Rows alternate white / cream.
   buildRow(x, cy, w, h, i, entry) {
     const rc = this.add.container(0, 0).setDepth(6);
     const fill = i % 2 ? ROW_CREAM : ROW_LIGHT;
@@ -358,28 +426,50 @@ export default class LeaderboardScene extends Phaser.Scene {
     );
 
     // score, right-aligned
-    rc.add(
-      this.add
-        .text(x + w - 24, cy + 0.5, String(entry.score), {
-          fontFamily: FONT,
-          fontSize: '21px',
-          fontStyle: '700',
-          color: INK_CSS,
-        })
-        .setOrigin(1, 0.5)
-    );
+    const scoreText = this.add
+      .text(x + w - 24, cy + 0.5, String(entry.score), {
+        fontFamily: FONT,
+        fontSize: '21px',
+        fontStyle: '700',
+        color: INK_CSS,
+      })
+      .setOrigin(1, 0.5);
+    rc.add(scoreText);
 
     // name
-    rc.add(
-      this.add
-        .text(x + 52, cy + 0.5, String(entry.name), {
+    const nameX = x + 52;
+    const nameText = this.add
+      .text(nameX, cy + 0.5, String(entry.name), {
+        fontFamily: FONT,
+        fontSize: '21px',
+        fontStyle: '700',
+        color: INK_CSS,
+      })
+      .setOrigin(0, 0.5);
+    rc.add(nameText);
+
+    // optional message — muted, after the name, ellipsised if it would collide
+    // with the score. (The 50-char server cap makes overflow rare.)
+    if (entry.message) {
+      const msgX = nameX + nameText.width + 10;
+      const avail = x + w - 24 - scoreText.width - 18 - msgX;
+      const msg = this.add
+        .text(msgX, cy + 0.5, `— '${entry.message}'`, {
           fontFamily: FONT,
-          fontSize: '21px',
-          fontStyle: '700',
-          color: INK_CSS,
+          fontSize: '16px',
+          fontStyle: '600',
+          color: '#6a7580',
         })
-        .setOrigin(0, 0.5)
-    );
+        .setOrigin(0, 0.5);
+      if (msg.width > avail && avail > 24) {
+        let s = entry.message;
+        while (s.length > 1 && msg.width > avail) {
+          s = s.slice(0, -1);
+          msg.setText(`— '${s.replace(/\s+$/, '')}…'`);
+        }
+      }
+      rc.add(msg);
+    }
 
     return rc;
   }

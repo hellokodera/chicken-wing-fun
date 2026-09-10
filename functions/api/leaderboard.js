@@ -8,11 +8,12 @@
  * Response body: a JSON OBJECT (wrapped so fields can be added later without a
  * breaking change):
  *   {
- *     entries:   [ { name, score, ts }, ... ],  // top N, score desc
+ *     entries:   [ { name, score, ts, message }, ... ],  // top N, score desc
  *     total:     <number>,   // count of all valid score records scanned
  *     truncated: <boolean>   // true if the scan hit MAX_PAGES (total is a floor)
  *   }
  *   - ts = ms-epoch of the submission (from the record's list() metadata).
+ *   - message = the sanitised note, or null (older/no-message records).
  *   - An empty namespace returns { entries: [], total: 0, truncated: false }
  *     (HTTP 200) — never an error, never mock data.
  *
@@ -88,6 +89,7 @@ export async function onRequestGet({ request, env }) {
           name: m.name,
           score: m.score,
           ts: typeof m.ts === 'number' ? m.ts : 0,
+          message: typeof m.message === 'string' && m.message ? m.message : null,
         });
       }
       cursor = res.list_complete ? undefined : res.cursor;
