@@ -1,4 +1,5 @@
 import { GAME } from './config.js';
+import { installOrientationGuard } from './util/orientationGuard.js';
 import BootScene from './scenes/BootScene.js';
 import PreloadScene from './scenes/PreloadScene.js';
 import StartScene from './scenes/StartScene.js';
@@ -35,5 +36,8 @@ const config = {
   ],
 };
 
-// eslint-disable-next-line no-new
-new Phaser.Game(config);
+const game = new Phaser.Game(config);
+
+// Landscape-only: pause scenes + show a "rotate your device" overlay in portrait.
+// A DOM layer on top of Scale.FIT; does not change the scale config above.
+installOrientationGuard(game);
