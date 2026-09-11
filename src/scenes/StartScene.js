@@ -29,7 +29,21 @@ export default class StartScene extends Phaser.Scene {
       .setAlpha(0.85);
     this.tweens.add({ targets: hint, alpha: 0.35, duration: 700, yoyo: true, repeat: -1 });
 
-    const start = () => {
+    const start = (pointer, currentlyOver) => {
+      // TEMP DIAGNOSTIC — remove alongside fullscreenButton.js's dbg() once
+      // the "fullscreen button does nothing on StartScene" bug is confirmed
+      // fixed. This is a GLOBAL pointerdown listener (not tied to any game
+      // object), and Phaser's window-level touch listener feeds taps on the
+      // fullscreen button's DOM button (outside the canvas) into Phaser's
+      // own pointer system too — so this can fire from a tap that was meant
+      // for that button, not "the canvas." Logging the pointer's world
+      // coords + what it's over lets us confirm whether that's happening.
+      console.log('[fs-debug][StartScene] "tap anywhere" pointerdown', {
+        x: pointer.x,
+        y: pointer.y,
+        eventTarget: pointer.event && pointer.event.target && pointer.event.target.tagName,
+        currentlyOverCount: currentlyOver ? currentlyOver.length : null,
+      });
       Sfx.play(this, 'button');
       this.scene.start('TutorialScene');
     };

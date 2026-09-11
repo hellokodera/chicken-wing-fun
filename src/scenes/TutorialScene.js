@@ -1,6 +1,7 @@
 import { GAME } from '../config.js';
 import { addCover } from '../util/display.js';
 import { Sfx } from '../util/sfx.js';
+import { hitFloor } from '../ui/widgets.js';
 
 // Three-step how-to-play screen, between StartScene and GameScene. Same look as
 // the rest of the game: bathroom bg, a tile-coloured card with a bold ink
@@ -621,9 +622,12 @@ export default class TutorialScene extends Phaser.Scene {
     // by nothing so it stays invisible but visible:true / alpha:1 -> hit-testable.
     // A Rectangle GameObject (origin 0.5, real size) gives Phaser's input a
     // clean, reliable hit test from the first frame. Hit area stated explicitly
-    // so there's no reliance on texture/size inference.
-    const hw = w + 24;
-    const hh = h + 18;
+    // so there's no reliance on texture/size inference. Floored to the same
+    // 48px real-px touch-target minimum as every other button (see
+    // ui/widgets.js hitFloor) — these buttons sit far enough apart (nearest
+    // neighbour edges ~230px away at design scale) that the floor can never
+    // make two of them overlap.
+    const { w: hw, h: hh } = hitFloor(this, w + 24, h + 18);
     const hit = this.add.rectangle(x, y, hw, hh).setDepth(21);
     hit.setInteractive({
       hitArea: new Phaser.Geom.Rectangle(0, 0, hw, hh),

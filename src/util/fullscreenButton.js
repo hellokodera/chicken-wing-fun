@@ -87,6 +87,15 @@
 import { GAME } from '../config.js';
 import { portraitNow, GUARD_ID } from './orientation.js';
 
+// TEMP DIAGNOSTIC LOGGING — remove once the mobile "needs several taps"
+// (GameScene) and "does nothing at all" (StartScene) bugs are confirmed
+// fixed from real device logs, not just code tracing. Prefixed so it's easy
+// to filter in a remote/tunnel console: filter on "[fs-debug]".
+const DEBUG = true;
+function dbg(...args) {
+  if (DEBUG) console.log('[fs-debug]', performance.now().toFixed(1), ...args);
+}
+
 const VISIBLE_SCENES = new Set(['StartScene', 'GameScene']);
 
 // Chip (visible, DOCKED mode): world size 64, world margin 20 from the true
@@ -146,6 +155,34 @@ export function installFullscreenButton(game) {
   chip.appendChild(icon);
   hit.appendChild(chip);
   document.body.appendChild(hit);
+
+  // Stop every tap on this button from reaching Phaser at all — same
+  // "absorb it so it can't reach the canvas" pattern orientationGuard.js
+  // uses for its own overlay (see its own comment there). It matters more
+  // here than it looks: Phaser's TouchManager attaches a WINDOW-level
+  // touchstart/touchend listener (confirmed by reading Phaser 3.80.1's own
+  // source) that treats ANY touch whose target isn't the canvas as a real
+  // pointer event and dispatches it to every scene — including this button,
+  // which is a DOM element outside the canvas entirely. That's exactly what
+  // was making StartScene's global "tap anywhere to play" listener fire
+  // from a tap that was meant for THIS button: the touch bubbled from `hit`
+  // up to `window`, where Phaser was listening for it. stopPropagation()
+  // here, on the way up from `hit`, keeps it from ever reaching `window` —
+  // fixed at the source, so it protects any other global listener too, not
+  // just this one scene's.
+  [
+    'pointerdown', 'pointerup', 'pointermove', 'touchstart', 'touchend',
+    'touchmove', 'mousedown', 'mouseup', 'click', 'contextmenu',
+  ].forEach((t) =>
+    hit.addEventListener(
+      t,
+      (e) => {
+        e.stopPropagation();
+        if (t === 'contextmenu') e.preventDefault();
+      },
+      { passive: false }
+    )
+  );
 
   function drawIcon(isFullscreen) {
     const R = isFullscreen ? INNER : OUTER;
@@ -243,13 +280,53 @@ export function installFullscreenButton(game) {
   }
 
   // --- visibility: VISIBLE_SCENES active, or the device is in portrait ---
+  // reposition() also runs every tick while visible (not just on the
+  // show/hide transition and on resize/orientationchange/fullscreenchange).
+  // Those discrete events are the expected triggers for the canvas's on-
+  // screen rect changing, but they're not the ONLY way it can drift out of
+  // sync with this button's DOM position — e.g. a mobile browser's address
+  // bar hiding/showing on scroll/tap can resize the visual viewport without
+  // reliably firing a 'resize' event on every engine, and two 'resize'
+  // listeners (Phaser's ScaleManager and this one) racing on the same event
+  // aren't guaranteed to leave the canvas in its final laid-out position by
+  // the time this one reads getBoundingClientRect(). Recomputing every
+  // frame is cheap (a handful of arithmetic ops + one layout read at 60fps)
+  // and closes that staleness window outright instead of chasing every way
+  // it could open — this was the most likely cause of the button
+  // occasionally "not responding": the invisible hit target had silently
+  // drifted from the visible chip the user was actually tapping.
+  // NOT game.scene.getScenes(true).some(...) — getScenes(true) filters on
+  // Phaser's isActive(), which is defined as status === RUNNING and is
+  // FALSE while a scene is PAUSED. orientationGuard pauses GameScene for the
+  // entire time the phone is in portrait and only resumes it asynchronously
+  // (its own separately-scheduled rAF), independently of this PRE_STEP
+  // check. That left a real window, right at the portrait->landscape
+  // rotation moment, where portraitNow() had already flipped to false but
+  // GameScene hadn't been resumed yet — both halves of the OR below would
+  // read false, hiding this button (display:none) at exactly the moment a
+  // tap was most likely to land on it. isActive(key) || isPaused(key) counts
+  // the scene as "present" regardless of which of those two states it's in.
   let visible = false;
   function syncVisibility() {
-    const onOwnScene = game.scene.getScenes(true).some((s) => VISIBLE_SCENES.has(s.scene.key));
+    const onOwnScene = [...VISIBLE_SCENES].some(
+      (key) => game.scene.isActive(key) || game.scene.isPaused(key)
+    );
     const active = onOwnScene || portraitNow();
-    if (active === visible) return;
-    visible = active;
-    hit.style.display = active ? 'block' : 'none';
+    if (active !== visible) {
+      visible = active;
+      hit.style.display = active ? 'block' : 'none';
+      // TEMP DIAGNOSTIC: every show/hide flip, with WHY, to catch the
+      // resume-timing gap (button hiding right at the rotation moment) live.
+      dbg('visibility ->', active ? 'SHOWN' : 'HIDDEN', {
+        onOwnScene,
+        portraitNow: portraitNow(),
+        scenes: [...VISIBLE_SCENES].map((key) => ({
+          key,
+          isActive: game.scene.isActive(key),
+          isPaused: game.scene.isPaused(key),
+        })),
+      });
+    }
     if (active) reposition();
   }
   const PRE_STEP =
@@ -260,13 +337,59 @@ export function installFullscreenButton(game) {
   window.addEventListener('resize', reposition, { passive: true });
   window.addEventListener('orientationchange', reposition, { passive: true });
   document.addEventListener('fullscreenchange', () => {
+    dbg('fullscreenchange event fired; fullscreenElement now:', !!document.fullscreenElement);
     drawIcon(Boolean(document.fullscreenElement));
     reposition();
   });
 
+  // Debounce, same pattern used by every other tappable control in the game
+  // (TutorialScene's _navBusy, LeaderboardScene's _leaving, Hud's _closing)
+  // — this button was the one place that pattern was missing. It matters
+  // more here than elsewhere: entering/exiting fullscreen on Android isn't
+  // instantaneous, and document.fullscreenElement doesn't flip until the
+  // transition actually finishes. An impatient second tap while that's still
+  // in flight would re-enter the same branch, the browser would reject the
+  // overlapping request, and .catch(() => {}) would swallow it — which looks
+  // exactly like "sometimes does nothing" from the user's side. `busy` is
+  // cleared on 'fullscreenchange' (the transition actually completed) and
+  // also on a settle timeout as a fallback for the "request rejected/failed
+  // outright, so fullscreenchange never fires" case — otherwise a failed
+  // request would leave the button permanently stuck ignoring taps.
+  let busy = false;
+  const clearBusy = (source) => {
+    if (source) dbg('clearBusy from:', source);
+    busy = false;
+  };
+  document.addEventListener('fullscreenchange', () => clearBusy('fullscreenchange'));
+
   hit.addEventListener('click', () => {
+    // TEMP DIAGNOSTIC: everything needed to reconstruct what happened on a
+    // real device — was this tap ignored by our own debounce, what did the
+    // browser think the fullscreen state was at the moment of the tap, and
+    // (below) which branch got taken and whether the browser API rejected it.
+    dbg('CLICK', {
+      busy,
+      fullscreenElementAtTap: !!document.fullscreenElement,
+      hitDisplay: hit.style.display,
+      visible,
+    });
+
+    if (busy) {
+      dbg('  -> ignored: busy (debounced)');
+      return;
+    }
+    busy = true;
+    setTimeout(() => clearBusy('timeout-fallback'), 1500); // fallback if fullscreenchange never fires
+
     if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
+      dbg('  -> branch: EXIT fullscreen');
+      document
+        .exitFullscreen()
+        .then(() => dbg('  exitFullscreen resolved'))
+        .catch((err) => {
+          dbg('  exitFullscreen REJECTED:', err && err.message, err);
+          clearBusy('exitFullscreen-catch');
+        });
       if (screen.orientation && typeof screen.orientation.unlock === 'function') {
         try {
           screen.orientation.unlock();
@@ -276,9 +399,11 @@ export function installFullscreenButton(game) {
       }
       return;
     }
+    dbg('  -> branch: ENTER fullscreen');
     document.documentElement
       .requestFullscreen()
       .then(() => {
+        dbg('  requestFullscreen resolved; fullscreenElement now:', !!document.fullscreenElement);
         // Best-effort: not universally supported, and can fail even when
         // fullscreen itself just succeeded — that's expected, not an error.
         // When it DOES succeed the browser actually rotates the rendered
@@ -286,10 +411,16 @@ export function installFullscreenButton(game) {
         // matchMedia listeners pick up on their own — no extra wiring needed
         // here to hide its overlay.
         if (screen.orientation && typeof screen.orientation.lock === 'function') {
-          screen.orientation.lock('landscape').catch(() => {});
+          screen.orientation
+            .lock('landscape')
+            .then(() => dbg('  orientation.lock resolved'))
+            .catch((err) => dbg('  orientation.lock rejected (expected/harmless):', err && err.message));
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        dbg('  requestFullscreen REJECTED:', err && err.name, err && err.message, err);
+        clearBusy('requestFullscreen-catch');
+      });
   });
 
   syncVisibility();

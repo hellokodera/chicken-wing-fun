@@ -1,7 +1,9 @@
 import { GAME } from '../config.js';
 import { addCover } from '../util/display.js';
 import { Sfx } from '../util/sfx.js';
-import { drawPill } from '../ui/widgets.js';
+import { drawPill, hitFloor } from '../ui/widgets.js';
+
+const SUPPORT_URL = 'https://ko-fi.com/ethansadventure';
 
 // Screen 2 of the end-of-round flow. Fetches the real top scores from
 // GET /api/leaderboard and renders them — "badge  name  score" per row, every
@@ -388,6 +390,11 @@ export default class LeaderboardScene extends Phaser.Scene {
   // side, centred as a pair on (rx, cy) — deliberately quiet so neither rivals
   // the tub above them. Widths are measured from each label first so the pair
   // can be centred as a unit before either pill is actually drawn.
+  //
+  // Share stays a normal Phaser hit rectangle (drawActionPill). Support is
+  // built differently (buildSupportPill) — its tap target is a real DOM <a>
+  // anchor, not a Phaser hit test, because window.open() from a Phaser
+  // pointer handler isn't safe from popup blockers (see buildSupportPill).
   buildActionRow(rx, cy) {
     const share = this.measureActionPill('Share the fun!');
     const support = this.measureActionPill('Support Ethan');
@@ -395,8 +402,10 @@ export default class LeaderboardScene extends Phaser.Scene {
     const shareCx = rx - groupW / 2 + share.w / 2;
     const supportCx = rx + groupW / 2 - support.w / 2;
 
-    this.drawActionPill(shareCx, cy, share, drawShareIcon, () => this.onShare());
-    this.drawActionPill(supportCx, cy, support, drawHeartIcon, () => this.onSupport());
+    // 'left': Share's hit box only ever grows outward (left), never toward
+    // Support — see drawActionPill's growDir doc.
+    this.drawActionPill(shareCx, cy, share, drawShareIcon, () => this.onShare(), 'left');
+    this.buildSupportPill(supportCx, cy, support);
   }
 
   // Measures a label at the action-pill font and returns everything
@@ -414,7 +423,18 @@ export default class LeaderboardScene extends Phaser.Scene {
 
   // Draws one action pill centred at (cx, cy) from a measureActionPill() spec.
   // `drawIcon(g, icx)` draws whatever glyph sits in the icon slot.
-  drawActionPill(cx, cy, spec, drawIcon, onClick) {
+  //
+  // `growDir` ('left' | 'right' | null): the base hit box (w+16 x H+14) was
+  // sized so this pill and its neighbour meet exactly edge-to-edge with zero
+  // gap AND zero overlap (see ACTION_GAP's own comment) — at ANY canvas
+  // scale, since both pill widths and the gap between them are all in world
+  // units, scaled uniformly together. That means flooring the hit box to the
+  // 48px real-px minimum (ui/widgets.js hitFloor) symmetrically would push
+  // it straight into the neighbour's territory on small screens. `growDir`
+  // keeps the edge facing the neighbour fixed exactly where it already is,
+  // and only grows the OUTER edge (away from the neighbour) to reach the
+  // floor — so it can add real tap-target area but can never overlap.
+  drawActionPill(cx, cy, spec, drawIcon, onClick, growDir = null) {
     const { label, contentW, w } = spec;
     const H = ACTION_H;
     const R = H / 2;
@@ -441,9 +461,15 @@ export default class LeaderboardScene extends Phaser.Scene {
 
     view.add([g, ig, txt]);
 
-    const hitW = w + 16;
-    const hitH = H + 14;
-    const hit = this.add.rectangle(cx, cy, hitW, hitH).setDepth(12);
+    const baseW = w + 16;
+    const baseH = H + 14;
+    const { w: hitW, h: hitH } = hitFloor(this, baseW, baseH);
+    const extraW = hitW - baseW;
+    let hitCx = cx;
+    if (extraW > 0 && growDir === 'left') hitCx = cx - extraW / 2;
+    else if (extraW > 0 && growDir === 'right') hitCx = cx + extraW / 2;
+
+    const hit = this.add.rectangle(hitCx, cy, hitW, hitH).setDepth(12);
     hit.setInteractive({
       hitArea: new Phaser.Geom.Rectangle(0, 0, hitW, hitH),
       hitAreaCallback: Phaser.Geom.Rectangle.Contains,
@@ -485,13 +511,115 @@ export default class LeaderboardScene extends Phaser.Scene {
     }
   }
 
-  // Opens Ethan's Ko-fi page in a new tab. `noopener,noreferrer` so the new tab
-  // can't reach back into this window (standard hygiene for a target="_blank"-
-  // style open) — window.open failing (popup blocker, older/odd browser) is a
-  // silent no-op rather than an error; there's nothing useful to recover into.
-  onSupport() {
-    Sfx.play(this, 'button');
-    window.open('https://ko-fi.com/ethansadventure', '_blank', 'noopener,noreferrer');
+  // Same visuals as drawActionPill, but the tap target is a real DOM <a>
+  // anchor overlaid on the canvas, not a Phaser hit rectangle + window.open().
+  //
+  // window.open() called from a Phaser pointerdown handler isn't safe: Phaser
+  // queues the native touch/pointer event and only emits its OWN 'pointerdown'
+  // on game objects during its input-processing step (not synchronously
+  // inside the browser's trusted click/touch handler) — so by the time
+  // onClick() runs, the call is no longer nested in a call stack the browser
+  // recognises as "this IS the user's gesture," and strict popup blockers
+  // (Safari especially; some Android WebViews too) silently block it as an
+  // untrusted popup. A real anchor tag sidesteps the whole problem: clicking
+  // it is native link navigation, which no popup blocker ever touches.
+  //
+  // Sized/positioned exactly like the fullscreen toggle's DOM overlay (see
+  // util/fullscreenButton.js) — a fixed-position element in real CSS px,
+  // derived each frame from the canvas's live on-screen rect — but floored
+  // to 48px growing ONLY rightward/outward (never left, toward Share) so it
+  // can't encroach on Share's own hit zone next to it (see drawActionPill's
+  // growDir doc — the two pills' base hit boxes already meet edge-to-edge
+  // with zero slack by design).
+  buildSupportPill(cx, cy, spec) {
+    const { label, contentW, w } = spec;
+    const H = ACTION_H;
+    const R = H / 2;
+    const view = this.add.container(cx, cy).setDepth(11);
+
+    const g = this.add.graphics();
+    g.fillStyle(0xf3f7f2, 1);
+    g.fillRoundedRect(-w / 2, -H / 2, w, H, R);
+    g.lineStyle(4, INK, 1);
+    g.strokeRoundedRect(-w / 2, -H / 2, w, H, R);
+
+    const icx = -contentW / 2 + ACTION_ICON_W / 2;
+    const ig = this.add.graphics();
+    drawHeartIcon(ig, icx);
+
+    const txt = this.add
+      .text(-contentW / 2 + ACTION_ICON_W + ACTION_ICON_GAP, 1, label, {
+        fontFamily: FONT,
+        fontSize: ACTION_FONT_SIZE,
+        fontStyle: '700',
+        color: INK_CSS,
+      })
+      .setOrigin(0, 0.5);
+    view.add([g, ig, txt]);
+
+    const baseW = w + 16;
+    const baseH = H + 14;
+    const leftWorld = cx - baseW / 2; // fixed — the edge shared with Share
+
+    const link = document.createElement('a');
+    link.href = SUPPORT_URL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.setAttribute('aria-label', 'Support Ethan — opens Ko-fi in a new tab');
+    // z-index just needs to clear the canvas — nowhere near
+    // orientationGuard's overlay (2147483000), so that overlay still covers
+    // this exactly like it covers the canvas when the device is in portrait.
+    link.style.cssText = `
+      position:fixed; z-index:20; display:block; background:transparent;
+      -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+    `;
+    document.body.appendChild(link);
+
+    const reposition = () => {
+      const canvas = this.game.canvas;
+      if (!canvas || !link.isConnected) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / GAME.WIDTH;
+      const scaleY = rect.height / GAME.HEIGHT;
+
+      const pxW = Math.max(baseW * scaleX, 48);
+      const pxH = Math.max(baseH * scaleY, 48);
+      const leftPx = rect.left + leftWorld * scaleX; // shared edge, unmoved
+      const topPx = rect.top + (cy - baseH / 2) * scaleY - (pxH - baseH * scaleY) / 2;
+
+      link.style.left = `${leftPx}px`;
+      link.style.top = `${topPx}px`;
+      link.style.width = `${pxW}px`;
+      link.style.height = `${pxH}px`;
+    };
+    reposition();
+
+    const pressDown = () => {
+      view.setScale(0.96);
+      Sfx.play(this, 'button');
+    };
+    const pressUp = () => view.setScale(1);
+    link.addEventListener('pointerdown', pressDown);
+    link.addEventListener('pointerup', pressUp);
+    link.addEventListener('pointerleave', pressUp);
+    link.addEventListener('mouseenter', () => view.setScale(1.04));
+    link.addEventListener('mouseleave', () => view.setScale(1));
+
+    window.addEventListener('resize', reposition, { passive: true });
+    window.addEventListener('orientationchange', reposition, { passive: true });
+    const PRE_STEP =
+      (window.Phaser && Phaser.Core && Phaser.Core.Events && Phaser.Core.Events.PRE_STEP) ||
+      'prestep';
+    this.game.events.on(PRE_STEP, reposition);
+
+    this.events.once('shutdown', () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('orientationchange', reposition);
+      this.game.events.off(PRE_STEP, reposition);
+      link.remove();
+    });
+
+    return { view, link };
   }
 
   // Small pill toast, centred on (cx, cy): fades in, holds ~1.5s, fades out.

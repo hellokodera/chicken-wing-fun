@@ -1,5 +1,6 @@
 import { GAME } from '../config.js';
 import { Sfx } from '../util/sfx.js';
+import { hitFloor } from './widgets.js';
 
 // Two rounded pills, drawn in code: SCORE top-left, TIME top-right. Plus a small
 // streak badge under the SCORE pill, and an X button in the top-right corner
@@ -77,10 +78,14 @@ export default class Hud {
     g.lineTo(cx - a, cy + a);
     g.strokePath();
 
-    const hitW = size + 18; // a bit generous for small fingers
-    const hit = s.add.zone(cx, cy, hitW, hitW).setDepth(102);
+    // +18 world units is "a bit generous for small fingers" at design scale,
+    // but floored to the 48px real-px touch-target minimum (ui/widgets.js
+    // hitFloor) so it stays generous once Scale.FIT shrinks the canvas down
+    // for a phone screen.
+    const { w: hitW, h: hitH } = hitFloor(s, size + 18, size + 18);
+    const hit = s.add.zone(cx, cy, hitW, hitH).setDepth(102);
     hit.setInteractive({
-      hitArea: new Phaser.Geom.Rectangle(0, 0, hitW, hitW),
+      hitArea: new Phaser.Geom.Rectangle(0, 0, hitW, hitH),
       hitAreaCallback: Phaser.Geom.Rectangle.Contains,
       useHandCursor: true,
     });

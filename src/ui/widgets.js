@@ -7,6 +7,24 @@ import { GAME } from '../config.js';
 const INK = 0x26313a;
 const FONT = '"Fredoka", "Baloo 2", sans-serif';
 
+// Real px floor for tap targets — Apple HIG's 44pt / Material's 48dp
+// minimum, the same standard applied to the fullscreen toggle (see
+// util/fullscreenButton.js's HIT_MIN_PX). Padding a hit box purely in WORLD
+// units can look generous at the game's 1280x720 design resolution but
+// still land under 48 real CSS px once Scale.FIT scales the canvas down for
+// a phone screen (commonly ~0.5-0.6x in landscape) — so this converts the
+// floor into world units using the scene's current live scale before it's
+// applied, and grows w/h in place (never shrinks a box already bigger).
+export function hitFloor(scene, w, h, minPx = 48) {
+  const ds = scene && scene.scale && scene.scale.displayScale;
+  const scaleX = (ds && ds.x) || 1;
+  const scaleY = (ds && ds.y) || 1;
+  return {
+    w: scaleX > 0 ? Math.max(w, minPx / scaleX) : w,
+    h: scaleY > 0 ? Math.max(h, minPx / scaleY) : h,
+  };
+}
+
 // A rounded "pill" drawn in code and centred on (cx, cy). Matches the HUD SCORE
 // pill (cream 0xf3f7f2 fill, 5px ink outline). The corner radius defaults to
 // half the height, so the ends are always full semicircles no matter how tall
@@ -67,8 +85,7 @@ export function pillButton(scene, x, y, opts) {
     .setOrigin(0.5);
   view.add([g, text]);
 
-  const hw = w + 22;
-  const hh = h + 16;
+  const { w: hw, h: hh } = hitFloor(scene, w + 22, h + 16);
   const hit = scene.add.rectangle(x, y, hw, hh).setDepth(depth + 1);
   hit.setInteractive({
     hitArea: new Phaser.Geom.Rectangle(0, 0, hw, hh),

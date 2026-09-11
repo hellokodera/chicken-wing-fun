@@ -1,7 +1,7 @@
 import { GAME } from '../config.js';
 import { addCover } from '../util/display.js';
 import { Sfx } from '../util/sfx.js';
-import { drawPill, pillButton } from '../ui/widgets.js';
+import { drawPill, pillButton, hitFloor } from '../ui/widgets.js';
 
 // Screen 1 of the end-of-round flow. Shows the final score, takes a name and an
 // optional preset message for Ethan (picked from a dropdown), then hands off to
@@ -297,9 +297,17 @@ export default class ScoreEntryScene extends Phaser.Scene {
       return r;
     });
 
-    const fh = this.add.rectangle(cx, cy, w, FIELD_H).setDepth(13);
+    // Floored to the 48px real-px touch-target minimum (width is already
+    // huge — it's the field's own on-screen width — so only height can ever
+    // actually grow here). The picker's individual option rows below are
+    // deliberately NOT floored the same way: they're stacked back-to-back
+    // with no gap, so growing their hit height would make adjacent rows'
+    // hit zones overlap and mis-select — a worse bug than a merely-small
+    // target on a screen with no time pressure.
+    const { w: fieldHitW, h: fieldHitH } = hitFloor(this, w, FIELD_H);
+    const fh = this.add.rectangle(cx, cy, fieldHitW, fieldHitH).setDepth(13);
     fh.setInteractive({
-      hitArea: new Phaser.Geom.Rectangle(0, 0, w, FIELD_H),
+      hitArea: new Phaser.Geom.Rectangle(0, 0, fieldHitW, fieldHitH),
       hitAreaCallback: Phaser.Geom.Rectangle.Contains,
       useHandCursor: true,
     });
