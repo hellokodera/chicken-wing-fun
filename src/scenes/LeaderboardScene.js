@@ -401,10 +401,13 @@ export default class LeaderboardScene extends Phaser.Scene {
     }
   }
 
-  // TODO: wire the real support/donation link once it's decided. Visual-only
-  // for now, per scope — just confirms the pill is pressable.
+  // Opens Ethan's Ko-fi page in a new tab. `noopener,noreferrer` so the new tab
+  // can't reach back into this window (standard hygiene for a target="_blank"-
+  // style open) — window.open failing (popup blocker, older/odd browser) is a
+  // silent no-op rather than an error; there's nothing useful to recover into.
   onSupport() {
     Sfx.play(this, 'button');
+    window.open('https://ko-fi.com/ethansadventure', '_blank', 'noopener,noreferrer');
   }
 
   // Small pill toast, centred on (cx, cy): fades in, holds ~1.5s, fades out.
