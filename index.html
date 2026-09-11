@@ -13,9 +13,23 @@
     html, body {
       margin: 0;
       padding: 0;
-      height: 100%;
+      /* 100vh is the layout viewport — on mobile it doesn't shrink/grow as the
+         browser's address bar shows/hides, so it either leaves a gap (when the
+         bar is showing, since 100vh already accounts for the bar-hidden height
+         in some browsers) or lets the page grow taller than the visible area
+         (in others), which is exactly what makes it scrollable. 100dvh tracks
+         the actual visible viewport live, so the page is always exactly as
+         tall as what's on screen — never more, never less. */
+      height: 100vh; /* fallback for browsers without dvh support */
       background: #26313A;
-      overflow: hidden;
+      overflow: hidden; /* belt-and-suspenders: page must never scroll */
+      overscroll-behavior: none; /* stop iOS/Android rubber-band bounce */
+      touch-action: none; /* stop browser gesture handling from fighting the game's own drag-to-aim input */
+    }
+    @supports (height: 100dvh) {
+      html, body {
+        height: 100dvh;
+      }
     }
     body {
       display: flex;
@@ -24,11 +38,12 @@
     }
     * { -webkit-tap-highlight-color: transparent; }
     /* anchor for Phaser's DOM-element container (name-entry <input>) */
-    #game { position: relative; }
+    #game { position: relative; touch-action: none; }
     #game canvas {
       display: block;
       border-radius: 14px;
       box-shadow: 0 12px 44px rgba(0, 0, 0, 0.45);
+      touch-action: none;
     }
   </style>
 </head>
