@@ -34,6 +34,48 @@ const API_TIMEOUT_MS = 8000;
 const SHARE_TEXT = 'This is such a fun game — come play with me!';
 const SHARE_URL = 'https://chicken-wing-fun-game.pages.dev';
 
+// Secondary-action pills under the tub: "Share the fun!" (left) and "Support
+// Ethan" (right). Same tier, same height/font — only the label, icon and click
+// handler differ. Padding is tightened from a single centred pill's 17px down
+// to 13px so the pair sits side by side without touching height or font size.
+const ACTION_H = 44;
+const ACTION_PAD_X = 13;
+const ACTION_ICON_W = 18;
+const ACTION_ICON_GAP = 8;
+const ACTION_GAP = 16; // between the two pills — sized so their (slightly
+// oversized, for small fingers) hit zones meet edge-to-edge without overlapping
+const ACTION_FONT_SIZE = '19px';
+const HEART_PINK = 0xff6f9e;
+
+// Icon glyphs for the action pills. Each draws into a fresh Graphics object at
+// local coords with y=0 on the pill's vertical centre; `icx` is the icon slot's
+// horizontal centre. Kept as free functions (no `this`) since they only touch
+// the Graphics object passed in.
+function drawShareIcon(g, icx) {
+  // three dots joined from a left node — the original share-arrow glyph
+  const dL = { x: icx - 6.5, y: 0 };
+  const dTR = { x: icx + 6.5, y: -6.5 };
+  const dBR = { x: icx + 6.5, y: 6.5 };
+  g.lineStyle(2.4, INK, 1);
+  g.lineBetween(dL.x, dL.y, dTR.x, dTR.y);
+  g.lineBetween(dL.x, dL.y, dBR.x, dBR.y);
+  g.fillStyle(INK, 1);
+  g.fillCircle(dL.x, dL.y, 3);
+  g.fillCircle(dTR.x, dTR.y, 3);
+  g.fillCircle(dBR.x, dBR.y, 3);
+}
+
+function drawHeartIcon(g, icx) {
+  // Flat pink heart: two lobes + a triangular point, same solid fill so the
+  // three primitives merge into one silhouette with no visible seam. Sized to
+  // roughly the same ~13-14px footprint as the share glyph above (proportional
+  // icon weight, matching icon slot).
+  g.fillStyle(HEART_PINK, 1);
+  g.fillCircle(icx - 3.5, -2.5, 3.7);
+  g.fillCircle(icx + 3.5, -2.5, 3.7);
+  g.fillTriangle(icx - 6.6, -2, icx + 6.6, -2, icx, 6.2);
+}
+
 export default class LeaderboardScene extends Phaser.Scene {
   constructor() {
     super('LeaderboardScene');
@@ -59,7 +101,7 @@ export default class LeaderboardScene extends Phaser.Scene {
     const rx = 1016;
     this.buildYourScorePill(rx);
     this.buildPlayAgain(rx, 486);
-    this.buildShareButton(rx, 646);
+    this.buildActionRow(rx, 646);
 
     // --- leaderboard: load, then render (or empty / error state) ---
     const panelCX = PANEL_X + PANEL_W / 2;
@@ -258,50 +300,56 @@ export default class LeaderboardScene extends Phaser.Scene {
     });
   }
 
-  // A compact rounded pill (cream fill, ink outline) with a small share glyph
-  // and single-colour label — deliberately quiet so it doesn't rival the tub.
-  buildShareButton(cx, cy) {
-    const H = 44;
-    const R = H / 2;
-    const PAD_X = 17;
-    const ICON_W = 18;
-    const ICON_GAP = 8;
-    const LABEL = 'Share the fun!';
+  // Two compact rounded pills (cream fill, ink outline), same tier, side by
+  // side, centred as a pair on (rx, cy) — deliberately quiet so neither rivals
+  // the tub above them. Widths are measured from each label first so the pair
+  // can be centred as a unit before either pill is actually drawn.
+  buildActionRow(rx, cy) {
+    const share = this.measureActionPill('Share the fun!');
+    const support = this.measureActionPill('Support Ethan');
+    const groupW = share.w + ACTION_GAP + support.w;
+    const shareCx = rx - groupW / 2 + share.w / 2;
+    const supportCx = rx + groupW / 2 - support.w / 2;
 
-    const measure = this.add
-      .text(0, 0, LABEL, { fontFamily: FONT, fontSize: '19px', fontStyle: '700' })
+    this.drawActionPill(shareCx, cy, share, drawShareIcon, () => this.onShare());
+    this.drawActionPill(supportCx, cy, support, drawHeartIcon, () => this.onSupport());
+  }
+
+  // Measures a label at the action-pill font and returns everything
+  // drawActionPill needs: the content width (icon + gap + text) and the total
+  // pill width (content + padding on both sides).
+  measureActionPill(label) {
+    const probe = this.add
+      .text(0, 0, label, { fontFamily: FONT, fontSize: ACTION_FONT_SIZE, fontStyle: '700' })
       .setVisible(false);
-    const textW = Math.ceil(measure.width);
-    measure.destroy();
+    const textW = Math.ceil(probe.width);
+    probe.destroy();
+    const contentW = ACTION_ICON_W + ACTION_ICON_GAP + textW;
+    return { label, contentW, w: contentW + ACTION_PAD_X * 2 };
+  }
 
-    const contentW = ICON_W + ICON_GAP + textW;
-    const W = contentW + PAD_X * 2;
+  // Draws one action pill centred at (cx, cy) from a measureActionPill() spec.
+  // `drawIcon(g, icx)` draws whatever glyph sits in the icon slot.
+  drawActionPill(cx, cy, spec, drawIcon, onClick) {
+    const { label, contentW, w } = spec;
+    const H = ACTION_H;
+    const R = H / 2;
     const view = this.add.container(cx, cy).setDepth(11);
 
     const g = this.add.graphics();
     g.fillStyle(0xf3f7f2, 1);
-    g.fillRoundedRect(-W / 2, -H / 2, W, H, R);
+    g.fillRoundedRect(-w / 2, -H / 2, w, H, R);
     g.lineStyle(4, INK, 1);
-    g.strokeRoundedRect(-W / 2, -H / 2, W, H, R);
+    g.strokeRoundedRect(-w / 2, -H / 2, w, H, R);
 
-    // share glyph: three dots joined from a left node — drawn at the icon slot
-    const icx = -contentW / 2 + ICON_W / 2;
-    const dL = { x: icx - 6.5, y: 0 };
-    const dTR = { x: icx + 6.5, y: -6.5 };
-    const dBR = { x: icx + 6.5, y: 6.5 };
+    const icx = -contentW / 2 + ACTION_ICON_W / 2;
     const ig = this.add.graphics();
-    ig.lineStyle(2.4, INK, 1);
-    ig.lineBetween(dL.x, dL.y, dTR.x, dTR.y);
-    ig.lineBetween(dL.x, dL.y, dBR.x, dBR.y);
-    ig.fillStyle(INK, 1);
-    ig.fillCircle(dL.x, dL.y, 3);
-    ig.fillCircle(dTR.x, dTR.y, 3);
-    ig.fillCircle(dBR.x, dBR.y, 3);
+    drawIcon(ig, icx);
 
     const txt = this.add
-      .text(-contentW / 2 + ICON_W + ICON_GAP, 1, LABEL, {
+      .text(-contentW / 2 + ACTION_ICON_W + ACTION_ICON_GAP, 1, label, {
         fontFamily: FONT,
-        fontSize: '19px',
+        fontSize: ACTION_FONT_SIZE,
         fontStyle: '700',
         color: INK_CSS,
       })
@@ -309,7 +357,7 @@ export default class LeaderboardScene extends Phaser.Scene {
 
     view.add([g, ig, txt]);
 
-    const hitW = W + 16;
+    const hitW = w + 16;
     const hitH = H + 14;
     const hit = this.add.rectangle(cx, cy, hitW, hitH).setDepth(12);
     hit.setInteractive({
@@ -321,7 +369,7 @@ export default class LeaderboardScene extends Phaser.Scene {
     hit.on('pointerout', () => view.setScale(1));
     hit.on('pointerdown', () => {
       view.setScale(0.96);
-      this.onShare();
+      onClick();
     });
     hit.on('pointerup', () => view.setScale(1));
     hit.on('pointerupoutside', () => view.setScale(1));
@@ -351,6 +399,12 @@ export default class LeaderboardScene extends Phaser.Scene {
       // at least surface the URL so it isn't a dead end.
       this.flashToast(1016, 694, SHARE_URL.replace(/^https?:\/\//, ''));
     }
+  }
+
+  // TODO: wire the real support/donation link once it's decided. Visual-only
+  // for now, per scope — just confirms the pill is pressable.
+  onSupport() {
+    Sfx.play(this, 'button');
   }
 
   // Small pill toast, centred on (cx, cy): fades in, holds ~1.5s, fades out.
