@@ -10,10 +10,10 @@
  *   {
  *     entries:   [ { name, score, ts, message }, ... ],  // top N, score desc
  *     total:     <number>,   // count of all valid score records scanned
- *     truncated: <boolean>,  // true if the scan hit MAX_PAGES (total is a floor)
+ *     truncated: <boolean>,  // true if the scan hit MAX_RECORDS (total is a floor)
  *     player:    { rank, name, score, message } | null   // see `playerId` below
  *   }
- *   - ts = ms-epoch of the submission (from the record's list() metadata).
+ *   - ts = ms-epoch of the submission (from the record itself).
  *   - message = the sanitised note, or null (older/no-message records).
  *   - An empty namespace returns { entries: [], total: 0, truncated: false,
  *     player: null } (HTTP 200) — never an error, never mock data.
@@ -26,14 +26,17 @@
  *     — this is what lets the client show "your score, below the top 10" with
  *     a real rank number even when the player didn't place. `player` is null
  *     if `playerId` is omitted, or if that record isn't found — which happens
- *     for a few seconds right after submitting, since KV's list() can lag a
- *     fresh put() (eventual consistency); the client is expected to degrade
+ *     for a few seconds right after submitting, since KV reads can lag a fresh
+ *     put() (eventual consistency); the client is expected to degrade
  *     gracefully in that case rather than treating it as an error.
  *
- * NOTE ON SCALE: this lists + sorts the whole namespace inside the Function,
- * reading only list() metadata (no get() per key). That is fine into the tens of
- * thousands of rounds; MAX_PAGES caps the scan. Past that, replace this with a
- * maintained sorted index or D1.
+ * NOTE ON SCALE: this reads each record's actual VALUE via kv.get() (list() +
+ * per-key get, batched GET_CONCURRENCY at a time) rather than trusting list()
+ * metadata — so a score edited directly in the Cloudflare dashboard (which only
+ * lets you edit a key's value, not its metadata) is reflected immediately
+ * instead of being invisible. That costs one subrequest per record, so
+ * MAX_RECORDS caps the scan well below list()-metadata's old ~25,000; past that,
+ * replace this with a maintained sorted index or D1.
  *
  * NOTE ON DUPLICATES: every round is its own KV record, so the same player name
  * can legitimately appear more than once here (their multiple runs). No
@@ -43,7 +46,8 @@
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 const PAGE_SIZE = 1000; // KV list() hard max per page
-const MAX_PAGES = 25; // safety cap -> up to 25,000 records scanned per request
+const MAX_RECORDS = 500; // safety cap on get()s issued per request (subrequest cost)
+const GET_CONCURRENCY = 20; // parallel kv.get()s per batch
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -94,30 +98,42 @@ export async function onRequestGet({ request, env }) {
       ? playerIdRaw
       : null;
 
-  // --- gather every record from list() metadata (no get() per key) ---
+  // --- 1. list keys (cheap — no metadata needed, the real value is read below) ---
+  const keys = [];
+  let cursor;
+  try {
+    do {
+      const res = await kv.list({ prefix: 'score:', limit: PAGE_SIZE, cursor });
+      for (const k of res.keys) keys.push(k.name);
+      cursor = res.list_complete ? undefined : res.cursor;
+    } while (cursor && keys.length < MAX_RECORDS);
+  } catch {
+    return json({ error: 'Could not read the leaderboard. Please try again.' }, 500);
+  }
+  const truncated = Boolean(cursor) || keys.length > MAX_RECORDS;
+  const scanKeys = keys.slice(0, MAX_RECORDS);
+
+  // --- 2. read each record's actual value, batched so we don't fire hundreds
+  //        of concurrent subrequests at once ---
   // `id` is kept on each entry only to locate the requesting player's own
   // record below (for `player`/true rank) — it's stripped before the public
   // `entries` list is returned.
   const entries = [];
-  let cursor;
-  let pages = 0;
   try {
-    do {
-      const res = await kv.list({ prefix: 'score:', limit: PAGE_SIZE, cursor });
-      for (const k of res.keys) {
-        const m = k.metadata;
-        if (!m || typeof m.name !== 'string' || typeof m.score !== 'number') continue;
+    for (let i = 0; i < scanKeys.length; i += GET_CONCURRENCY) {
+      const batch = scanKeys.slice(i, i + GET_CONCURRENCY);
+      const values = await Promise.all(batch.map((key) => kv.get(key, 'json').catch(() => null)));
+      for (const v of values) {
+        if (!v || typeof v.name !== 'string' || typeof v.score !== 'number') continue;
         entries.push({
-          id: typeof m.id === 'string' ? m.id : null, // absent on pre-`id` records
-          name: m.name,
-          score: m.score,
-          ts: typeof m.ts === 'number' ? m.ts : 0,
-          message: typeof m.message === 'string' && m.message ? m.message : null,
+          id: typeof v.id === 'string' ? v.id : null, // absent on pre-`id` records
+          name: v.name,
+          score: v.score,
+          ts: typeof v.ts === 'number' ? v.ts : 0,
+          message: typeof v.message === 'string' && v.message ? v.message : null,
         });
       }
-      cursor = res.list_complete ? undefined : res.cursor;
-      pages += 1;
-    } while (cursor && pages < MAX_PAGES);
+    }
   } catch {
     return json({ error: 'Could not read the leaderboard. Please try again.' }, 500);
   }
@@ -143,7 +159,7 @@ export async function onRequestGet({ request, env }) {
     {
       entries: entries.slice(0, limit).map(({ id, ...rest }) => rest), // id never leaves this function
       total: entries.length,
-      truncated: Boolean(cursor), // cursor is only still set if we bailed at MAX_PAGES
+      truncated,
       player,
     },
     200
