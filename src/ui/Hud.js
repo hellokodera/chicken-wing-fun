@@ -2,12 +2,12 @@ import { GAME } from '../config.js';
 import { Sfx } from '../util/sfx.js';
 
 // Two rounded pills, drawn in code: SCORE top-left, TIME top-right. Plus a small
-// streak badge under the SCORE pill, an X button in the top-right corner (right
-// of the timer) that ends the round on the spot, and a fullscreen toggle in the
-// bottom-right corner (Android/desktop only — see buildFullscreenButton).
+// streak badge under the SCORE pill, and an X button in the top-right corner
+// (right of the timer) that ends the round on the spot. The bottom-right
+// fullscreen toggle lives outside this HUD — see util/fullscreenButton.js — as
+// a persistent DOM element shared across scenes, not a per-scene Phaser object.
 const CLOSE_SIZE = 54;
 const CLOSE_GAP = 14; // between the timer pill and the X
-const FS_SIZE = 54; // fullscreen button — same size as the X so it reads with equal weight
 
 export default class Hud {
   constructor(scene) {
@@ -17,7 +17,6 @@ export default class Hud {
     this.timeText = this.pill('right', 'TIME', 20 + CLOSE_SIZE + CLOSE_GAP);
     this.buildCombo();
     this.buildCloseButton();
-    this.buildFullscreenButton();
   }
 
   pill(anchor, label, edgeInset = 20) {
@@ -91,89 +90,6 @@ export default class Hud {
       Sfx.play(s, 'button');
       s.endRound(0);
     });
-  }
-
-  // --- fullscreen toggle ------------------------------------------------
-  // Bottom-right corner (video-player convention), same visual weight as the
-  // X. Feature-detected: the button is simply never created where the
-  // Fullscreen API is unsupported (notably iOS Safari — WebKit refuses
-  // requestFullscreen() on anything but a <video>) rather than shown and
-  // failing silently.
-  //
-  // Placement is verified against the tub's full range of motion, not just
-  // guessed: pixel-analysis of tub.png's actual opaque bounds (alpha > 10)
-  // shows that for any x >= this button's left edge (world x 1206), the
-  // deepest any opaque tub pixel can ever reach — across its whole
-  // TUB_MIN_X..TUB_MAX_X sweep — is world y ~= 569.5 (reached only at
-  // TUB_MAX_X). That leaves 76px of clearance above this button's top edge
-  // (world y 646). Past world x ~= 1229.5 the tub never has any opaque pixel
-  // at all, at any position.
-  buildFullscreenButton() {
-    const supported = typeof document.documentElement.requestFullscreen === 'function';
-    if (!supported) return;
-
-    const s = this.scene;
-    const size = FS_SIZE;
-    const cx = GAME.WIDTH - 20 - size / 2; // 1233 — bottom-right corner, 20px from each edge
-    const cy = GAME.HEIGHT - 20 - size / 2; // 673
-
-    const bg = s.add.graphics().setDepth(100);
-    bg.fillStyle(0xf3f7f2, 0.95);
-    bg.fillRoundedRect(cx - size / 2, cy - size / 2, size, size, 16);
-    bg.lineStyle(5, 0x26313a, 1);
-    bg.strokeRoundedRect(cx - size / 2, cy - size / 2, size, size, 16);
-
-    // Four corner brackets: pulled IN from the button's outer corners when not
-    // fullscreen ("expand"), pushed OUT from the button's centre when
-    // fullscreen ("compress") — the same convention as YouTube/Vimeo's control.
-    const icon = s.add.graphics().setDepth(101);
-    const OUTER = 12;
-    const INNER = 6;
-    const ARM = 8;
-    const drawIcon = (isFullscreen) => {
-      icon.clear();
-      icon.lineStyle(6, 0x26313a, 1);
-      const R = isFullscreen ? INNER : OUTER;
-      for (const [dx, dy] of [
-        [-1, -1],
-        [1, -1],
-        [-1, 1],
-        [1, 1],
-      ]) {
-        const px = cx + dx * R;
-        const py = cy + dy * R;
-        const ax = isFullscreen ? px + dx * ARM : px - dx * ARM;
-        const ay = isFullscreen ? py + dy * ARM : py - dy * ARM;
-        icon.beginPath();
-        icon.moveTo(px, py);
-        icon.lineTo(ax, py);
-        icon.moveTo(px, py);
-        icon.lineTo(px, ay);
-        icon.strokePath();
-      }
-    };
-    drawIcon(Boolean(document.fullscreenElement));
-
-    const hitW = size + 18;
-    const hit = s.add.zone(cx, cy, hitW, hitW).setDepth(102);
-    hit.setInteractive({
-      hitArea: new Phaser.Geom.Rectangle(0, 0, hitW, hitW),
-      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
-      useHandCursor: true,
-    });
-    hit.on('pointerdown', () => {
-      Sfx.play(s, 'button');
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      } else {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
-    });
-
-    // Also catches ESC / the browser's own fullscreen exit, not just our button.
-    const onFsChange = () => drawIcon(Boolean(document.fullscreenElement));
-    document.addEventListener('fullscreenchange', onFsChange);
-    s.events.once('shutdown', () => document.removeEventListener('fullscreenchange', onFsChange));
   }
 
   setScore(v) {

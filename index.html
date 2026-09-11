@@ -45,6 +45,18 @@
       box-shadow: 0 12px 44px rgba(0, 0, 0, 0.45);
       touch-action: none;
     }
+    /* The Fullscreen API's UA stylesheet defaults ::backdrop (the layer painted
+       BEHIND the fullscreened element, filling the whole physical screen) to
+       solid black. html/body's own 100dvh sizing should cover the entire
+       fullscreen viewport, but any gap or transitional mismatch — most
+       plausible in the portrait + failed-orientation-lock case the fullscreen
+       button now hits — would show that opaque black backdrop through, instead
+       of this page's own (much lighter, intentional) background. Override it
+       to transparent so our own background always shows, not the browser's. */
+    :fullscreen::backdrop,
+    :-webkit-full-screen::backdrop {
+      background: transparent;
+    }
   </style>
 </head>
 <body>

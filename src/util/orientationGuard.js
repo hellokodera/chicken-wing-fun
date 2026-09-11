@@ -17,7 +17,9 @@
 //
 // This is a layer on top of Scale.FIT — the scale mode is not touched.
 
-const ID = 'cwf-orientation-guard';
+import { fullscreenSupported } from './fullscreenButton.js';
+import { portraitNow, GUARD_ID as ID } from './orientation.js';
+
 const FADE_MS = 250;
 
 const CSS = `
@@ -49,18 +51,6 @@ const ICON = `
   <circle cx="50" cy="65.5" r="3.2" fill="#26313a"/>
 </svg>`;
 
-// Primary signal: matchMedia. Complement: raw viewport ratio, for browsers whose
-// (orientation: portrait) query lags or misreports (some Android WebViews,
-// desktop device-emulation modes). Either signal saying "portrait" wins — a
-// false negative (game running sideways) is worse than a brief false positive.
-function portraitNow() {
-  const mm =
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(orientation: portrait)').matches;
-  const ratio = window.innerHeight > window.innerWidth;
-  return Boolean(mm || ratio);
-}
-
 export function installOrientationGuard(game) {
   if (typeof document === 'undefined' || !game) return null;
 
@@ -78,7 +68,13 @@ export function installOrientationGuard(game) {
     el.setAttribute('role', 'alertdialog');
     el.setAttribute('aria-label', 'Turn your device to play');
     el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = `<div class="og-card">${ICON}<p class="og-text">Turn your device<br>to play!</p></div>`;
+    // Only mention the fullscreen button where it can actually appear — on
+    // iPhone it's feature-detected away entirely (see fullscreenButton.js), so
+    // the plain "turn your device" copy is all that would ever apply there.
+    const text = fullscreenSupported()
+      ? 'Turn your device to play<br>or press the fullscreen button'
+      : 'Turn your device<br>to play!';
+    el.innerHTML = `<div class="og-card">${ICON}<p class="og-text">${text}</p></div>`;
     // Absorb anything that lands on the overlay so it can't reach the canvas.
     // (The overlay also physically covers the canvas, so input is blocked
     // regardless — this is belt-and-braces.)

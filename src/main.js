@@ -1,5 +1,6 @@
 import { GAME } from './config.js';
 import { installOrientationGuard } from './util/orientationGuard.js';
+import { installFullscreenButton } from './util/fullscreenButton.js';
 import BootScene from './scenes/BootScene.js';
 import PreloadScene from './scenes/PreloadScene.js';
 import StartScene from './scenes/StartScene.js';
@@ -41,3 +42,8 @@ const game = new Phaser.Game(config);
 // Landscape-only: pause scenes + show a "rotate your device" overlay in portrait.
 // A DOM layer on top of Scale.FIT; does not change the scale config above.
 installOrientationGuard(game);
+
+// Bottom-right fullscreen toggle — Start + Game screens, plus any scene while
+// portrait (as an alternative to the rotate overlay above). A DOM layer, not
+// a Scale.FIT change — see util/fullscreenButton.js.
+installFullscreenButton(game);
