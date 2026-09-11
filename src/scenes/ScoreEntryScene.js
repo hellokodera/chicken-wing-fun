@@ -448,13 +448,17 @@ export default class ScoreEntryScene extends Phaser.Scene {
         justSubmitted =
           rec && typeof rec.score === 'number' && typeof rec.name === 'string'
             ? {
+                // lets the leaderboard ask the server for this exact record's
+                // true rank (GET /api/leaderboard?playerId=) if it falls
+                // outside the top-10 slice — see LeaderboardScene.
+                id: typeof rec.id === 'string' ? rec.id : null,
                 name: rec.name,
                 score: rec.score,
                 ts: typeof rec.ts === 'number' ? rec.ts : Date.now(),
                 // prefer the server's sanitised message
                 message: typeof rec.message === 'string' ? rec.message : message,
               }
-            : { name, score, ts: Date.now(), message };
+            : { id: null, name, score, ts: Date.now(), message };
       } else {
         saveError = true;
         const detail = await res.text().catch(() => '');

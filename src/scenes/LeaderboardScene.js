@@ -5,11 +5,20 @@ import { drawPill } from '../ui/widgets.js';
 
 // Screen 2 of the end-of-round flow. Fetches the real top scores from
 // GET /api/leaderboard and renders them — "badge  name  score" per row, every
-// row the same solid-bordered style. There is NO mock data and no client-side
-// merging: the board shows exactly what the API returns. Empty API result ->
-// an explicit "no scores yet" message; a failed fetch -> a "couldn't load"
-// message. The player's own score is always shown separately in the "YOUR
-// SCORE" pill on the right. "Play Again" is the real bathtub asset.
+// row the same solid-bordered style. There is NO mock data: every score on the
+// board is a real, server-stored record. Two client-side touches patch over KV
+// list()'s eventual consistency (a fresh put() can take a few seconds to show
+// up in list()) rather than leaving the player's own score to just vanish:
+//   - mergeOwnRow() optimistically splices the just-submitted row into the top
+//     10 by score if list() hasn't caught up yet.
+//   - if the player's score doesn't place in the top 10 at all, their row is
+//     still shown as an extra row below it (see computeExtraRow/renderBoard) —
+//     ranked using the server's own full scan when available (GET
+//     /api/leaderboard?playerId=), never guessed client-side.
+// Empty API result -> an explicit "no scores yet" message; a failed fetch ->
+// a "couldn't load" message. The player's own score is ALSO always shown
+// separately in the "YOUR SCORE" pill on the right, regardless of any of the
+// above. "Play Again" is the real bathtub asset.
 const INK = 0x26313a;
 const INK_CSS = '#26313a';
 const MUTED_CSS = '#8fa0ac';
@@ -18,6 +27,8 @@ const FONT = '"Fredoka", "Baloo 2", sans-serif';
 const PINK = 0xf0a9c8;
 const ROW_LIGHT = 0xffffff;
 const ROW_CREAM = 0xf6efe1;
+const OWN_ROW_FILL = 0xffe7a6; // highlight fill for the player's own extra row
+const EXTRA_ROW_GAP = 16; // extra breathing room above the out-of-top-10 player row
 const BADGE_BY_RANK = [0xffc93c, 0xbcd7ef, 0xff9f7a]; // 1st gold, 2nd blue, 3rd coral
 
 const PANEL_X = 56;
@@ -116,8 +127,13 @@ export default class LeaderboardScene extends Phaser.Scene {
       .setDepth(9);
 
     let entries = null; // null = load failed; [] = genuinely empty
+    let serverPlayer = null; // the submitter's true rank from the server's full
+    // scan (GET /api/leaderboard?playerId=), or null — see computeExtraRow.
     try {
-      entries = await this.fetchLeaderboard(BOARD_SIZE);
+      const own = this.justSubmitted;
+      const res = await this.fetchLeaderboard(BOARD_SIZE, own && own.id);
+      entries = res.entries;
+      serverPlayer = res.player;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[leaderboard] load failed:', (err && err.message) || err);
@@ -133,9 +149,10 @@ export default class LeaderboardScene extends Phaser.Scene {
     if (entries !== null && this.justSubmitted) {
       entries = this.mergeOwnRow(entries, this.justSubmitted, BOARD_SIZE);
     }
+    const extraRow = this.computeExtraRow(entries, serverPlayer);
 
     loading.destroy();
-    this.renderBoard(entries);
+    this.renderBoard(entries, extraRow);
   }
 
   // "YOUR SCORE" pill on the right, with the count-up. Also shows a small
@@ -185,20 +202,25 @@ export default class LeaderboardScene extends Phaser.Scene {
     }
   }
 
-  // GET /api/leaderboard -> { entries: [{ name, score, ts }], total, truncated }.
-  // Returns the cleaned entries array. Throws on non-OK / network / timeout so
-  // create() can distinguish "failed" from "empty".
-  async fetchLeaderboard(limit) {
+  // GET /api/leaderboard -> { entries, total, truncated, player }.
+  // Returns { entries: cleaned array, player: { rank, name, score, message } |
+  // null }. `playerId` (the just-submitted record's id, if any) asks the
+  // server to also report that record's TRUE rank from its full scan, even
+  // when it falls outside `limit` — player stays null if no id was given, or
+  // if that record hasn't propagated to KV's list() yet. Throws on non-OK /
+  // network / timeout so create() can distinguish "failed" from "empty".
+  async fetchLeaderboard(limit, playerId) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
     try {
-      const res = await fetch(`/api/leaderboard?limit=${limit}`, {
+      const qs = playerId ? `&playerId=${encodeURIComponent(playerId)}` : '';
+      const res = await fetch(`/api/leaderboard?limit=${limit}${qs}`, {
         signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const list = data && Array.isArray(data.entries) ? data.entries : [];
-      return list
+      const entries = list
         .filter((e) => e && typeof e.name === 'string' && typeof e.score === 'number')
         .map((e) => ({
           name: e.name,
@@ -207,22 +229,32 @@ export default class LeaderboardScene extends Phaser.Scene {
           message: typeof e.message === 'string' && e.message ? e.message : null,
         }))
         .slice(0, limit);
+      const p = data && data.player;
+      const player =
+        p && typeof p.rank === 'number' && typeof p.name === 'string' && typeof p.score === 'number'
+          ? { rank: p.rank, name: p.name, score: p.score, message: typeof p.message === 'string' && p.message ? p.message : null }
+          : null;
+      return { entries, player };
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  // Identity check used by both mergeOwnRow and computeExtraRow: is `e` the
+  // same submission as `own`? (No shared id on the client side pre-merge, so
+  // this matches on name + score + a close timestamp, same as the server's
+  // own dedup-adjacent logic would.)
+  isOwnRow(e, own) {
+    return (
+      e.name === own.name && e.score === own.score && Math.abs((e.ts || 0) - (own.ts || 0)) <= 4000
+    );
   }
 
   // Splice the player's just-submitted (real, server-stored) row into the
   // fetched list at its ranked position — unless KV's list() already returned
   // it. Same sort as the API: score desc, then earliest ts. Re-sliced to limit.
   mergeOwnRow(list, own, limit) {
-    const dupe = list.some(
-      (e) =>
-        e.name === own.name &&
-        e.score === own.score &&
-        Math.abs((e.ts || 0) - (own.ts || 0)) <= 4000
-    );
-    if (dupe) return list;
+    if (list.some((e) => this.isOwnRow(e, own))) return list;
     const merged = [
       ...list,
       { name: own.name, score: own.score, ts: own.ts, message: own.message || null },
@@ -231,15 +263,44 @@ export default class LeaderboardScene extends Phaser.Scene {
     return merged.slice(0, limit);
   }
 
+  // Decide whether the player's own row needs to be shown as an EXTRA row
+  // below the top-10 list — i.e. it isn't already sitting inside `entries`
+  // (genuinely ranked there, or optimistically placed there by mergeOwnRow).
+  // Prefers the server's true rank (from its full, unsliced scan of every
+  // record via ?playerId=); if that record hasn't propagated to list() yet
+  // (KV eventual consistency can lag a fresh put() by a few seconds), falls
+  // back to showing the row from what the client already knows — WITHOUT a
+  // specific rank number, rather than guessing one. Returns null when there's
+  // nothing to add (no submission this visit, load failed, or already shown).
+  computeExtraRow(entries, serverPlayer) {
+    const own = this.justSubmitted;
+    if (!own || entries === null) return null;
+    if (entries.some((e) => this.isOwnRow(e, own))) return null;
+    if (serverPlayer) {
+      return {
+        name: serverPlayer.name,
+        score: serverPlayer.score,
+        message: serverPlayer.message,
+        rank: serverPlayer.rank,
+      };
+    }
+    return { name: own.name, score: own.score, message: own.message || null, rank: null };
+  }
+
   // Builds the panel + rows from real data. `entries` is null on load failure,
-  // [] when the API genuinely has nothing yet.
-  renderBoard(entries) {
+  // [] when the API genuinely has nothing yet. `extraRow` (from
+  // computeExtraRow) is the player's own { name, score, message, rank } when
+  // their score doesn't place in `entries` — rendered as an 11th, highlighted
+  // row below the top 10, same as before the real backend replaced the old
+  // mock-data board's always-show-your-row behaviour.
+  renderBoard(entries, extraRow = null) {
     const panelCX = PANEL_X + PANEL_W / 2;
     const failed = entries === null;
     const list = failed ? [] : entries;
+    const showExtra = !failed && !!extraRow;
 
-    const bodyRows = Math.max(list.length, MIN_BODY_ROWS);
-    const panelH = HEAD_BAND + bodyRows * ROW_PITCH + BOT_PAD;
+    const bodyRows = Math.max(list.length, MIN_BODY_ROWS) + (showExtra ? 1 : 0);
+    const panelH = HEAD_BAND + bodyRows * ROW_PITCH + (showExtra ? EXTRA_ROW_GAP : 0) + BOT_PAD;
     const panelY = Math.max(16, Math.round((GAME.HEIGHT - panelH) / 2));
 
     drawPill(this, panelCX, panelY + panelH / 2, PANEL_W, panelH, {
@@ -298,6 +359,29 @@ export default class LeaderboardScene extends Phaser.Scene {
         ease: 'Sine.Out',
       });
     });
+
+    if (showExtra) {
+      const cy = contentTop + list.length * ROW_PITCH + EXTRA_ROW_GAP + ROW_H / 2;
+      const rc = this.buildRow(rowX, cy, rowW, ROW_H, list.length, {
+        name: extraRow.name,
+        score: extraRow.score,
+        message: extraRow.message || null,
+        rank: extraRow.rank,
+        // rank is null while the server's full scan hasn't found this record
+        // yet (KV list() lag) — show a dash rather than a guessed number.
+        rankLabel: extraRow.rank != null ? String(extraRow.rank) : '–',
+        highlight: true,
+      });
+      rc.setAlpha(0);
+      this.tweens.add({
+        targets: rc,
+        alpha: 1,
+        y: { from: 8, to: 0 },
+        duration: 220,
+        delay: 60 + list.length * 42 + 80,
+        ease: 'Sine.Out',
+      });
+    }
   }
 
   // Two compact rounded pills (cream fill, ink outline), same tier, side by
@@ -451,10 +535,15 @@ export default class LeaderboardScene extends Phaser.Scene {
 
   // One leaderboard row: a numbered circle badge, the name, an optional message
   // ("— 'Best game ever!'"), and the score right-aligned. `entry` is
-  // { name, score, message, rank }. Rows alternate white / cream.
+  // { name, score, message, rank, rankLabel?, highlight? }. Rows alternate
+  // white / cream, UNLESS `highlight` is set (the player's own row when it
+  // falls outside the top 10) — then it gets the warm own-row fill instead,
+  // same as every other row otherwise. `rankLabel` overrides the badge text
+  // (falls back to `String(rank)`) — used to show "–" when the true rank
+  // isn't known yet rather than a fabricated number.
   buildRow(x, cy, w, h, i, entry) {
     const rc = this.add.container(0, 0).setDepth(6);
-    const fill = i % 2 ? ROW_CREAM : ROW_LIGHT;
+    const fill = entry.highlight ? OWN_ROW_FILL : i % 2 ? ROW_CREAM : ROW_LIGHT;
 
     const g = this.add.graphics();
     g.fillStyle(fill, 1);
@@ -473,7 +562,7 @@ export default class LeaderboardScene extends Phaser.Scene {
     rc.add(badge);
     rc.add(
       this.add
-        .text(bx, cy + 0.5, String(entry.rank), {
+        .text(bx, cy + 0.5, entry.rankLabel != null ? entry.rankLabel : String(entry.rank), {
           fontFamily: FONT,
           fontSize: '15px',
           fontStyle: '700',

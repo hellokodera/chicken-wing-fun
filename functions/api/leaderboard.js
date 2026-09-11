@@ -10,14 +10,25 @@
  *   {
  *     entries:   [ { name, score, ts, message }, ... ],  // top N, score desc
  *     total:     <number>,   // count of all valid score records scanned
- *     truncated: <boolean>   // true if the scan hit MAX_PAGES (total is a floor)
+ *     truncated: <boolean>,  // true if the scan hit MAX_PAGES (total is a floor)
+ *     player:    { rank, name, score, message } | null   // see `playerId` below
  *   }
  *   - ts = ms-epoch of the submission (from the record's list() metadata).
  *   - message = the sanitised note, or null (older/no-message records).
- *   - An empty namespace returns { entries: [], total: 0, truncated: false }
- *     (HTTP 200) — never an error, never mock data.
+ *   - An empty namespace returns { entries: [], total: 0, truncated: false,
+ *     player: null } (HTTP 200) — never an error, never mock data.
  *
- * Query: ?limit=<1..100>   (default 10)
+ * Query:
+ *   ?limit=<1..100>      (default 10)
+ *   ?playerId=<uuid>     optional — the `id` from a submit-score response.
+ *     When given, the record with this id is located in the FULL sorted scan
+ *     (not just the returned top N) and its true rank is returned as `player`
+ *     — this is what lets the client show "your score, below the top 10" with
+ *     a real rank number even when the player didn't place. `player` is null
+ *     if `playerId` is omitted, or if that record isn't found — which happens
+ *     for a few seconds right after submitting, since KV's list() can lag a
+ *     fresh put() (eventual consistency); the client is expected to degrade
+ *     gracefully in that case rather than treating it as an error.
  *
  * NOTE ON SCALE: this lists + sorts the whole namespace inside the Function,
  * reading only list() metadata (no get() per key). That is fine into the tens of
@@ -72,10 +83,21 @@ export async function onRequestGet({ request, env }) {
     return json({ error: 'Leaderboard service is temporarily unavailable.' }, 500);
   }
 
-  const raw = parseInt(new URL(request.url).searchParams.get('limit'), 10);
+  const url = new URL(request.url);
+  const raw = parseInt(url.searchParams.get('limit'), 10);
   const limit = Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_LIMIT) : DEFAULT_LIMIT;
+  const playerIdRaw = url.searchParams.get('playerId');
+  // sanity cap only — a real id is always a 36-char crypto.randomUUID(); anything
+  // absurdly longer clearly isn't one and would just never match below anyway.
+  const playerId =
+    typeof playerIdRaw === 'string' && playerIdRaw.length > 0 && playerIdRaw.length <= 100
+      ? playerIdRaw
+      : null;
 
   // --- gather every record from list() metadata (no get() per key) ---
+  // `id` is kept on each entry only to locate the requesting player's own
+  // record below (for `player`/true rank) — it's stripped before the public
+  // `entries` list is returned.
   const entries = [];
   let cursor;
   let pages = 0;
@@ -86,6 +108,7 @@ export async function onRequestGet({ request, env }) {
         const m = k.metadata;
         if (!m || typeof m.name !== 'string' || typeof m.score !== 'number') continue;
         entries.push({
+          id: typeof m.id === 'string' ? m.id : null, // absent on pre-`id` records
           name: m.name,
           score: m.score,
           ts: typeof m.ts === 'number' ? m.ts : 0,
@@ -102,11 +125,26 @@ export async function onRequestGet({ request, env }) {
   // --- rank: score desc, then earliest submission first ---
   entries.sort((a, b) => b.score - a.score || a.ts - b.ts);
 
+  // Locate the requesting player's own record in the FULL sorted scan (not
+  // just the slice below) so a score outside the top N still gets its true
+  // rank — this is what lets the leaderboard show "your score, below the top
+  // 10" instead of just dropping it. null if no playerId was sent, or if the
+  // record hasn't propagated to list() yet (KV eventual consistency).
+  let player = null;
+  if (playerId) {
+    const idx = entries.findIndex((e) => e.id === playerId);
+    if (idx !== -1) {
+      const e = entries[idx];
+      player = { rank: idx + 1, name: e.name, score: e.score, message: e.message };
+    }
+  }
+
   return json(
     {
-      entries: entries.slice(0, limit),
+      entries: entries.slice(0, limit).map(({ id, ...rest }) => rest), // id never leaves this function
       total: entries.length,
       truncated: Boolean(cursor), // cursor is only still set if we bailed at MAX_PAGES
+      player,
     },
     200
   );

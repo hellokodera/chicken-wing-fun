@@ -165,9 +165,11 @@ export async function onRequestPost({ request, env }) {
   try {
     await env.chicken_wing_fun_leaderboard.put(key, JSON.stringify(record), {
       // small list()-visible summary so leaderboard reads later don't need a
-      // get() per key. (name<=20 + message<=50 + score + ts is well under KV's
-      // 1024-byte metadata limit.)
-      metadata: { name, score, ts, message },
+      // get() per key. (id + name<=20 + message<=50 + score + ts is well under
+      // KV's 1024-byte metadata limit.) `id` lets GET /api/leaderboard locate
+      // this exact record in its full scan to report the submitter's true rank
+      // even when it falls outside the top-N it returns.
+      metadata: { id, name, score, ts, message },
     });
   } catch {
     return json({ error: 'Could not save the score. Please try again.' }, 500);
