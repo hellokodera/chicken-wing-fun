@@ -160,6 +160,21 @@ export default class ScoreEntryScene extends Phaser.Scene {
     });
 
     this.input.keyboard.on('keydown-ENTER', () => this.submit(this._input.value));
+
+    // Android: tapping the name field opens the soft keyboard, but tapping
+    // elsewhere doesn't close it the way it would on a normal web page —
+    // Phaser's TouchManager listens at the WINDOW level (see
+    // fullscreenButton.js's comment) and dispatches every touch to the scene
+    // regardless of DOM target, so a plain "any tap -> blur" listener would
+    // also fire — and immediately re-blur — a tap that's re-focusing the
+    // already-focused field itself. Skip those by checking the tap's real
+    // DOM target; blur() only, never submit.
+    this.input.on('pointerdown', (pointer) => {
+      if (document.activeElement !== this._input) return;
+      if (pointer.event && pointer.event.target === this._input) return;
+      this._input.blur();
+    });
+
     this.events.once('shutdown', () => {
       if (this._input && this._input.parentNode) {
         this._input.parentNode.removeChild(this._input);
