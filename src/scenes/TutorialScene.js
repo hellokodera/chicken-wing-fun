@@ -19,7 +19,16 @@ const STEPS = [
   },
   {
     heading: 'Get a bonus!',
-    body: 'Splash the tub 3 times in a row for a bonus multi-throw! Hit the bright middle 3 in a row for an even bigger one!',
+    body: 'Splash the tub 3 times in a row for a bonus! Hit the middle 3 times for an even bigger one!',
+    // Line 1 measures ~937px unwrapped at the shared 24px body font — wider
+    // than the other steps' 860px wrap, so it would wrap to 2 lines there.
+    // Scoped to this step only (still well inside CARD's 1000px width) so
+    // steps 1 & 2 keep their original wrap untouched.
+    bodyWrapWidth: 960,
+    // second line, below the paragraph above — rendered as separate Text
+    // segments (see showStep()) so only "90 seconds" can be bold while the
+    // rest matches the paragraph's normal weight/color.
+    body2: [{ text: "You'll have " }, { text: '90 seconds', bold: true }, { text: ', throw as many wings as you can!' }],
   },
 ];
 
@@ -174,11 +183,38 @@ export default class TutorialScene extends Phaser.Scene {
         fontStyle: '600',
         color: '#3D474F',
         align: 'center',
-        wordWrap: { width: 860 },
+        wordWrap: { width: s.bodyWrapWidth || 860 },
         lineSpacing: 8,
       })
       .setOrigin(0.5, 0);
     layer.add([head, body]);
+
+    // Optional second line below the body paragraph — a run of Text
+    // segments laid out left-to-right and centred as a group, so a subset
+    // (marked `bold`) can be bold while the rest keeps the paragraph's own
+    // size/weight/color. Positioned off body's own rendered height so it
+    // sits right under it regardless of how many lines the paragraph wraps to.
+    if (s.body2) {
+      const LINE_GAP = 8; // matches body's own lineSpacing between wrapped lines
+      const lineY = body.y + body.height + LINE_GAP;
+      const pieces = s.body2.map((seg) =>
+        this.add
+          .text(0, lineY, seg.text, {
+            fontFamily: '"Baloo 2", "Fredoka", sans-serif',
+            fontSize: '24px',
+            fontStyle: seg.bold ? '700' : '600',
+            color: '#3D474F',
+          })
+          .setOrigin(0, 0)
+      );
+      const totalW = pieces.reduce((w, p) => w + p.width, 0);
+      let x = GAME.WIDTH / 2 - totalW / 2;
+      pieces.forEach((p) => {
+        p.x = x;
+        x += p.width;
+      });
+      layer.add(pieces);
+    }
 
     if (n === 1) this.buildStep1(layer);
     else if (n === 2) this.buildStep2(layer);
