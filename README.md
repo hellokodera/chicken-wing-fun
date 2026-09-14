@@ -1,7 +1,7 @@
 # Chicken Wing Fun
 
 A browser game for ages ~5–9. A penguin flings chicken wings, Angry-Birds-style
-drag-to-aim, into a bathtub that slides side to side. 120-second round, no way to
+drag-to-aim, into a bathtub that slides side to side. 90-second round, no way to
 lose — when the timer hits zero you get your score and a **Play Again** button.
 
 Built with **Phaser 3** (loaded from CDN). No build step.

@@ -5,7 +5,7 @@ export const GAME = {
   HEIGHT: 720,
 
   GRAVITY: 820, // arcade world gravity — floaty, cartoonish arc (not realistic)
-  ROUND_SECONDS: 120, // countdown length; no win/lose, just "time's up"
+  ROUND_SECONDS: 90, // countdown length; no win/lose, just "time's up"
   COOLDOWN: 420, // ms auto-reload between throws (no manual reload)
 
   // --- throw tuning (reverse slingshot: grab the wing, drag it toward the tub;
