@@ -46,7 +46,9 @@ function notFound() {
 export async function onRequestGet({ request, env }) {
   const expected = env && env.STATS_KEY;
   const given = new URL(request.url).searchParams.get('key');
-  if (!expected || !given || given !== expected) return notFound();
+  // TEMPORARY DIAGNOSTIC (round-logging branch only) — revert before merging.
+  if (!expected) return new Response('stats: STATS_KEY not configured', { status: 503 });
+  if (!given || given !== expected) return notFound();
 
   const kv = env.chicken_wing_fun_leaderboard;
   if (!kv) return new Response('Service unavailable', { status: 500 });
