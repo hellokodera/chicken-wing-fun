@@ -87,15 +87,6 @@
 import { GAME } from '../config.js';
 import { portraitNow, GUARD_ID } from './orientation.js';
 
-// TEMP DIAGNOSTIC LOGGING — remove once the mobile "needs several taps"
-// (GameScene) and "does nothing at all" (StartScene) bugs are confirmed
-// fixed from real device logs, not just code tracing. Prefixed so it's easy
-// to filter in a remote/tunnel console: filter on "[fs-debug]".
-const DEBUG = true;
-function dbg(...args) {
-  if (DEBUG) console.log('[fs-debug]', performance.now().toFixed(1), ...args);
-}
-
 const VISIBLE_SCENES = new Set(['StartScene', 'GameScene']);
 
 // Chip (visible, DOCKED mode): world size 64, world margin 20 from the true
@@ -315,17 +306,6 @@ export function installFullscreenButton(game) {
     if (active !== visible) {
       visible = active;
       hit.style.display = active ? 'block' : 'none';
-      // TEMP DIAGNOSTIC: every show/hide flip, with WHY, to catch the
-      // resume-timing gap (button hiding right at the rotation moment) live.
-      dbg('visibility ->', active ? 'SHOWN' : 'HIDDEN', {
-        onOwnScene,
-        portraitNow: portraitNow(),
-        scenes: [...VISIBLE_SCENES].map((key) => ({
-          key,
-          isActive: game.scene.isActive(key),
-          isPaused: game.scene.isPaused(key),
-        })),
-      });
     }
     if (active) reposition();
   }
@@ -337,7 +317,6 @@ export function installFullscreenButton(game) {
   window.addEventListener('resize', reposition, { passive: true });
   window.addEventListener('orientationchange', reposition, { passive: true });
   document.addEventListener('fullscreenchange', () => {
-    dbg('fullscreenchange event fired; fullscreenElement now:', !!document.fullscreenElement);
     drawIcon(Boolean(document.fullscreenElement));
     reposition();
   });
@@ -356,40 +335,18 @@ export function installFullscreenButton(game) {
   // outright, so fullscreenchange never fires" case — otherwise a failed
   // request would leave the button permanently stuck ignoring taps.
   let busy = false;
-  const clearBusy = (source) => {
-    if (source) dbg('clearBusy from:', source);
+  const clearBusy = () => {
     busy = false;
   };
-  document.addEventListener('fullscreenchange', () => clearBusy('fullscreenchange'));
+  document.addEventListener('fullscreenchange', clearBusy);
 
   hit.addEventListener('click', () => {
-    // TEMP DIAGNOSTIC: everything needed to reconstruct what happened on a
-    // real device — was this tap ignored by our own debounce, what did the
-    // browser think the fullscreen state was at the moment of the tap, and
-    // (below) which branch got taken and whether the browser API rejected it.
-    dbg('CLICK', {
-      busy,
-      fullscreenElementAtTap: !!document.fullscreenElement,
-      hitDisplay: hit.style.display,
-      visible,
-    });
-
-    if (busy) {
-      dbg('  -> ignored: busy (debounced)');
-      return;
-    }
+    if (busy) return;
     busy = true;
-    setTimeout(() => clearBusy('timeout-fallback'), 1500); // fallback if fullscreenchange never fires
+    setTimeout(clearBusy, 1500); // fallback if fullscreenchange never fires
 
     if (document.fullscreenElement) {
-      dbg('  -> branch: EXIT fullscreen');
-      document
-        .exitFullscreen()
-        .then(() => dbg('  exitFullscreen resolved'))
-        .catch((err) => {
-          dbg('  exitFullscreen REJECTED:', err && err.message, err);
-          clearBusy('exitFullscreen-catch');
-        });
+      document.exitFullscreen().catch(clearBusy);
       if (screen.orientation && typeof screen.orientation.unlock === 'function') {
         try {
           screen.orientation.unlock();
@@ -399,11 +356,9 @@ export function installFullscreenButton(game) {
       }
       return;
     }
-    dbg('  -> branch: ENTER fullscreen');
     document.documentElement
       .requestFullscreen()
       .then(() => {
-        dbg('  requestFullscreen resolved; fullscreenElement now:', !!document.fullscreenElement);
         // Best-effort: not universally supported, and can fail even when
         // fullscreen itself just succeeded — that's expected, not an error.
         // When it DOES succeed the browser actually rotates the rendered
@@ -411,16 +366,10 @@ export function installFullscreenButton(game) {
         // matchMedia listeners pick up on their own — no extra wiring needed
         // here to hide its overlay.
         if (screen.orientation && typeof screen.orientation.lock === 'function') {
-          screen.orientation
-            .lock('landscape')
-            .then(() => dbg('  orientation.lock resolved'))
-            .catch((err) => dbg('  orientation.lock rejected (expected/harmless):', err && err.message));
+          screen.orientation.lock('landscape').catch(() => {});
         }
       })
-      .catch((err) => {
-        dbg('  requestFullscreen REJECTED:', err && err.name, err && err.message, err);
-        clearBusy('requestFullscreen-catch');
-      });
+      .catch(clearBusy);
   });
 
   syncVisibility();
