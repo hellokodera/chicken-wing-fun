@@ -36,13 +36,24 @@
     // chosen message on the leaderboard row.  NOT part of the shipped game.
     import { GAME } from './src/config.js';
     import { makeRuntimeTextures } from './src/util/textures.js';
+    import { Music } from './src/util/music.js';
+    import { installOrientationGuard } from './src/util/orientationGuard.js';
     import PreloadScene from './src/scenes/PreloadScene.js';
+    import StartScene from './src/scenes/StartScene.js';
+    import TutorialScene from './src/scenes/TutorialScene.js';
+    import GameScene from './src/scenes/GameScene.js';
     import ScoreEntryScene from './src/scenes/ScoreEntryScene.js';
     import LeaderboardScene from './src/scenes/LeaderboardScene.js';
 
     const params = new URLSearchParams(location.search);
     const which = params.get('scene') || 'score';
-    const target = which === 'board' ? 'LeaderboardScene' : 'ScoreEntryScene';
+    const target =
+      which === 'board' ? 'LeaderboardScene'
+      : which === 'game' ? 'GameScene'
+      : which === 'start' ? 'StartScene'
+      : which === 'tutorial' ? 'TutorialScene'
+      : 'ScoreEntryScene';
+    const NO_DATA = target === 'GameScene' || target === 'StartScene' || target === 'TutorialScene';
     // ?js=Name:Score[:Message]  -> synthesise a `justSubmitted` for the board
     // (mimics a successful POST) to test the optimistic self-insert.
     const jsRaw = params.get('js');
@@ -87,7 +98,10 @@
     class Pre extends PreloadScene {
       create() {
         makeRuntimeTextures(this);
-        this.scene.start(target, data);
+        // ?music=1 -> start the real background-music chain (for verifying the
+        // orientation guard doesn't stop it on scene pause/resume).
+        if (params.get('music') === '1') Music.startRandom(this);
+        this.scene.start(target, NO_DATA ? undefined : data);
       }
     }
 
@@ -100,9 +114,10 @@
       scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
       physics: { default: 'arcade', arcade: { gravity: { y: GAME.GRAVITY } } },
       dom: { createContainer: true },
-      scene: [Boot, Pre, ScoreEntryScene, LeaderboardScene],
+      scene: [Boot, Pre, StartScene, TutorialScene, GameScene, ScoreEntryScene, LeaderboardScene],
     });
     window.__game = game; // dev-harness hook for CDP screenshot scripts
+    installOrientationGuard(game); // same call main.js makes
 
     // For static screenshots: once the target scene is up, fast-forward every
     // tween (count-ups, row fade-ins) straight to the end so the capture shows
