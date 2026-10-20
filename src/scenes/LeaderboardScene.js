@@ -43,8 +43,8 @@ const MIN_BODY_ROWS = 3; // keep the panel from looking cramped on 0/1/2 results
 const BOARD_SIZE = 10; // how many ranked rows the board shows
 const API_TIMEOUT_MS = 8000;
 
-// "Share the fun!" — deliberately no score, no competitive framing.
-const SHARE_TEXT = 'This is such a fun game — come play with me!';
+// "Share the fun!" — the message is fixed text; the player's actual score is not sent.
+const SHARE_TEXT = 'Ethan made a penguin game! 🐧🍗 Can you beat my score?';
 const SHARE_URL = 'https://chicken-wing-fun-game.pages.dev';
 
 // Secondary-action pills under the tub: "Share the fun!" (left) and "Support
