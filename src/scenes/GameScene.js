@@ -3,6 +3,7 @@ import { addCover } from '../util/display.js';
 import { simulateArc } from '../util/trajectory.js';
 import { ZONE_TEXT_COLOR } from '../util/scoring.js';
 import { Sfx } from '../util/sfx.js';
+import { logRound } from '../util/roundLog.js';
 import Penguin from '../objects/Penguin.js';
 import Tub from '../objects/Tub.js';
 import Wing from '../objects/Wing.js';
@@ -83,7 +84,7 @@ export default class GameScene extends Phaser.Scene {
         if (this.roundOver) return;
         this.remaining -= 1;
         this.hud.setTime(Math.max(0, this.remaining));
-        if (this.remaining <= 0) this.endRound();
+        if (this.remaining <= 0) this.endRound(600, true);
       },
     });
   }
@@ -400,15 +401,17 @@ export default class GameScene extends Phaser.Scene {
   // --- round flow ---------------------------------------------------
 
   // delayMs 600 = the "time's up" beat when the clock runs out; the HUD X button
-  // passes 0 so it feels instant.
-  endRound(delayMs = 600) {
+  // passes 0 so it feels instant. Only a round the clock ran out on (`finished`)
+  // is logged; an early exit via X is not.
+  endRound(delayMs = 600, finished = false) {
     if (this.roundOver) return;
     this.roundOver = true;
     this.aiming = false;
     this.aimGfx.clear();
-    this.time.delayedCall(delayMs, () =>
-      this.scene.start('ScoreEntryScene', { score: this.score })
-    );
+    this.time.delayedCall(delayMs, () => {
+      if (finished) logRound(this.score);
+      this.scene.start('ScoreEntryScene', { score: this.score });
+    });
   }
 
   update(time, delta) {
